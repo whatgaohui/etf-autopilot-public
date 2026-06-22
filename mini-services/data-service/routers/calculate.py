@@ -64,6 +64,19 @@ def _ensure_calculation_log_table(conn: sqlite3.Connection) -> None:
         ("rules_hit_summary", "TEXT"),
         ("data_quality_summary", "TEXT"),
         ("ai_explanation_json", "TEXT"),
+        # V4.2 策略书§15 新增审计字段
+        ("strategy_version", "TEXT"),
+        ("equity_allocation_base", "REAL"),
+        ("base_bucket_amount", "INTEGER"),
+        ("value_bucket_amount", "INTEGER"),
+        ("rebalance_equity_reserve", "INTEGER"),
+        ("weekly_unallocated_cash", "INTEGER"),
+        ("qdii_pending_cash_sp500", "INTEGER"),
+        ("qdii_pending_cash_nasdaq", "INTEGER"),
+        ("cash_movements", "TEXT"),
+        ("fallback_triggered", "BOOLEAN"),
+        ("fallback_reason", "TEXT"),
+        ("macro_prompts", "TEXT"),
     ]
     for col, coltype in new_cols:
         if col not in existing_cols:
@@ -212,6 +225,26 @@ def _load_market_data_for_calculation(codes: list[str]) -> dict:
     return market_data
 
 
+def _load_cash_subaccount_balances() -> dict:
+    """V4.2 策略书§3.1: 从 cash_subaccount 表读取所有子账户余额。
+
+    返回 dict: {account_type: balance}
+    例: {"rebalance_equity_reserve": 5000, "qdii_pending_cash_sp500": 3000, ...}
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            rows = conn.execute(
+                "SELECT account_type, balance FROM cash_subaccount"
+            ).fetchall()
+            return {row[0]: row[1] for row in rows}
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"[CALCULATE] Failed to load cash subaccount balances: {e}")
+        return {}
+
+
 def _get_latest_market_data_cache_time() -> str:
     """Query the SQLite cache for the MAX(updated_at) across all rows.
 
@@ -265,6 +298,10 @@ async def calculate(request: CalculateRequest):
         market_data[code].setdefault("dividend_yield", None)
         market_data[code].setdefault("updated_at", "")
         market_data[code].setdefault("sample_days", 0)
+
+    # V4.2 策略书§3.1: 注入现金子账户余额（权益配置基准需要）
+    if not request.cash_subaccount_balances:
+        request.cash_subaccount_balances = _load_cash_subaccount_balances()
 
     # Run the rule engine
     result = calculate_suggestions(request, market_data)
@@ -508,8 +545,12 @@ def _persist_calculation_log(request: CalculateRequest, result: CalculateRespons
                  total_budget, total_allocated, total_rebalanced, total_unallocated,
                  cash_destination, ai_explanation_check_result, source_comparison,
                  rules_hit_summary, data_quality_summary,
-                 input_json, output_json, ai_explanation_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 input_json, output_json, ai_explanation_json, created_at,
+                 strategy_version, equity_allocation_base, base_bucket_amount, value_bucket_amount,
+                 rebalance_equity_reserve, weekly_unallocated_cash,
+                 qdii_pending_cash_sp500, qdii_pending_cash_nasdaq,
+                 cash_movements, fallback_triggered, fallback_reason, macro_prompts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.calculation_id,
@@ -530,10 +571,34 @@ def _persist_calculation_log(request: CalculateRequest, result: CalculateRespons
                 json.dumps(output_summary, ensure_ascii=False, default=str),
                 None,  # ai_explanation_json 由 advice 路由后续填充
                 datetime.now().isoformat(),
+                # V4.2 新增字段（策略书§15 审计字段）
+                result.strategy_version,
+                result.equity_allocation_base,
+                result.base_bucket_amount,
+                result.value_bucket_amount,
+                result.rebalance_equity_reserve,
+                result.weekly_unallocated_cash,
+                result.qdii_pending_cash_sp500,
+                result.qdii_pending_cash_nasdaq,
+                json.dumps(
+                    [cm.model_dump(by_alias=True) for cm in result.cash_movements],
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                1 if result.fallback_triggered else 0,
+                result.fallback_reason,
+                json.dumps(result.macro_prompts, ensure_ascii=False, default=str),
             ),
         )
         conn.commit()
-        logger.info(f"[CALCULATE] Persisted calculation_log for {result.calculation_id} (V4 16 fields)")
+        logger.info(
+            f"[CALCULATE] Persisted calculation_log for {result.calculation_id} "
+            f"(V4.2 audit fields: strategyVersion={result.strategy_version}, "
+            f"equityAllocationBase={result.equity_allocation_base}, "
+            f"baseBucketAmount={result.base_bucket_amount}, "
+            f"valueBucketAmount={result.value_bucket_amount}, "
+            f"fallbackTriggered={result.fallback_triggered})"
+        )
     finally:
         conn.close()
 

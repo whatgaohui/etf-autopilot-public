@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import DB_DIR, DB_PATH, SERVICE_HOST, SERVICE_PORT
-from routers import cached, calculate, data_quality, data_source, health, refresh
+from routers import cached, calculate, data_quality, data_source, health, macro, refresh
 from scheduler.jobs import setup_scheduler
 
 # Configure logging
@@ -216,8 +216,15 @@ def _init_db():
                  datetime.now().isoformat())
             )
 
+        # V4.2 PRD§11.14: 宏观3张表
+        try:
+            from services.macro_service import _ensure_macro_tables
+            _ensure_macro_tables(conn)
+        except Exception as e:
+            logger.warning(f"[STARTUP] macro tables init failed (non-blocking): {e}")
+
         conn.commit()
-        logger.info(f"[DB] Database initialized at {DB_PATH} (V4.2 schema: cash_subaccount/cash_ledger)")
+        logger.info(f"[DB] Database initialized at {DB_PATH} (V4.2 schema: cash_subaccount/cash_ledger/macro)")
     finally:
         conn.close()
 
@@ -291,6 +298,7 @@ app.include_router(refresh.router)
 app.include_router(calculate.router)
 app.include_router(data_source.router)
 app.include_router(data_quality.router)
+app.include_router(macro.router)
 
 
 if __name__ == "__main__":

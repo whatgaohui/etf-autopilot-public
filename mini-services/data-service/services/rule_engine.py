@@ -51,6 +51,8 @@ from config import (
     MAX_SINGLE_ETF_BUY_RATIO,
     QDII_PREMIUM_HARD_VETO_TODAY,
     QDII_PREMIUM_HARD_VETO_3D_AVG,
+    QDII_RELEASE_PLAN_WEEKS,
+    QDII_RELEASE_CAP_MULTIPLIER,
 )
 
 logger = logging.getLogger(__name__)
@@ -1252,11 +1254,38 @@ def calculate_suggestions(
         }
 
     # ──────────────────────────────────────────────
+    # V4.2 策略书§8.4: QDII挂起资金释放(溢价恢复正常时分8周释放)
+    # ──────────────────────────────────────────────
+    hard_vetoed_codes = {c for c, it in per_item.items() if it["vetoed"]}
+    qdii_release_amounts: dict[str, float] = {}
+    qdii_release_info: list[dict] = []
+    for c in QDII_CODES:
+        if c in hard_vetoed_codes:
+            continue  # 仍被硬否决, 不释放
+        pending_balance = qdii_pending_cash_sp500 if c == "513500" else qdii_pending_cash_nasdaq
+        if pending_balance <= 0:
+            continue
+        # V4.2 策略书§8.4: 单周释放上限 = min(余额/剩余周数, 正常周预算×2)
+        normal_weekly = weekly_budget * target_ratios.get(c, 0)
+        release_cap = normal_weekly * QDII_RELEASE_CAP_MULTIPLIER if normal_weekly > 0 else pending_balance
+        weekly_release = min(pending_balance / QDII_RELEASE_PLAN_WEEKS, release_cap)
+        if weekly_release > 0:
+            qdii_release_amounts[c] = weekly_release
+            qdii_release_info.append({
+                "code": c, "pending_balance": pending_balance,
+                "weekly_release": weekly_release,
+                "release_plan_weeks": QDII_RELEASE_PLAN_WEEKS,
+            })
+            logger.info(
+                f"[QDII-RELEASE] {c} 挂起池余额¥{pending_balance:.0f}, "
+                f"本周释放¥{weekly_release:.0f} (分{QDII_RELEASE_PLAN_WEEKS}周)"
+            )
+
+    # ──────────────────────────────────────────────
     # V4.2 Step 6: 构建两个池子
     # base_pool: gap>0 且 非硬否决 (基础仓可投, 不受软风控限制)
     # value_pool: gap>0 且 非硬否决 且 非pause_all (增强仓可投, 受软风控限制)
     # ──────────────────────────────────────────────
-    hard_vetoed_codes = {c for c, it in per_item.items() if it["vetoed"]}
     base_pool = [
         c for c, it in per_item.items()
         if it["base_gap_amount"] > 0 and not it["vetoed"]
@@ -1360,6 +1389,20 @@ def calculate_suggestions(
         
         multipliers[c] = multiplier
         pre_cap_amounts[c] = base_amt + value_amt
+        # V4.2 §8.4: QDII挂起池释放资金加入本周可执行金额
+        if c in qdii_release_amounts:
+            pre_cap_amounts[c] += qdii_release_amounts[c]
+            # 记录释放 info hit
+            if effective_hits.get(c) is None:
+                effective_hits[c] = []
+            effective_hits[c].append(RuleHit(
+                ruleType="info",
+                ruleName="QDII挂起池释放",
+                conditionText=f"溢价恢复正常, 挂起池释放¥{qdii_release_amounts[c]:.0f}(分{QDII_RELEASE_PLAN_WEEKS}周)",
+                actualValue=f"¥{qdii_release_amounts[c]:.0f}",
+                threshold=f"{QDII_RELEASE_PLAN_WEEKS}周",
+                effect="增加本周买入金额",
+            ))
         # 标记桶类型
         if base_amt > 0 and value_amt > 0:
             bucket_types[c] = "base+value"
@@ -1704,7 +1747,23 @@ def calculate_suggestions(
                     createdAt=datetime.now().isoformat(),
                     status="active",
                 ))
-    
+
+    # V4.2 策略书§8.4: QDII挂起池释放(溢价恢复正常时分批释放)
+    for info in qdii_release_info:
+        c = info["code"]
+        qdii_subaccount = "qdii_pending_cash_sp500" if c == "513500" else "qdii_pending_cash_nasdaq"
+        release_amt = int(round(info["weekly_release"]))
+        if release_amt > 0:
+            cash_movements.append(CashLedgerEntry(
+                cashAccountType=qdii_subaccount,
+                sourceEvent="qdii_release",
+                sourceEtf=c,
+                amount=release_amt,
+                createdAt=datetime.now().isoformat(),
+                releasedAt=datetime.now().isoformat(),
+                status="released",
+            ))
+
     cash_pool_inflow = total_unallocated + total_rebalanced
 
     # Find the latest updated_at in market_data for the snapshot
