@@ -1,0 +1,8 @@
+{
+  "name": "data-service",
+  "version": "1.0.0",
+  "description": "Python FastAPI microservice for ETF data caching and rule engine calculation",
+  "scripts": {
+    "dev": ".venv/bin/python main.py"
+  }
+}

@@ -1,0 +1,125 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// ETF基础信息
+model EtfConfig {
+  id                String   @id @default(cuid())
+  /// ETF代码，如"159338"
+  code              String   @unique
+  /// ETF名称，如"中证A500ETF"
+  name              String
+  /// 大类：domestic/overseas/commodity/cash
+  category          String
+  /// 目标占比，如0.18表示18%
+  targetRatio       Float
+  /// 是否在黑名单
+  isBlacklisted     Boolean  @default(false)
+  /// 是否为定投标的
+  isInvestmentTarget Boolean @default(true)
+  /// 排序
+  sortOrder         Int      @default(0)
+  /// V4 PRD§12.1: 资产大类 domestic | overseas | commodity | cash
+  assetClass        String?
+  /// V4 PRD§12.1: 角色 core | satellite | cash_pool | blacklist
+  role              String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("etf_config")
+}
+
+/// 持仓快照
+model HoldingSnapshot {
+  id            String   @id @default(cuid())
+  /// 快照日期
+  snapshotDate  DateTime
+  /// ETF代码
+  etfCode       String
+  /// ETF名称
+  etfName       String
+  /// 持仓份额
+  shares        Float
+  /// 成本价
+  costPrice     Float
+  /// 市值
+  marketValue   Float
+  /// 当前占总资产比例，如0.148表示14.8%
+  currentRatio  Float
+  createdAt     DateTime @default(now())
+  /// V4 PRD§12.2: 数据来源 ocr | manual
+  source        String   @default("manual")
+  /// V4 PRD§12.2: OCR 置信度 0-1（OCR来源时记录）
+  ocrConfidence Float?
+  /// V4 PRD§12.2: 是否经过人工校准
+  isManualCorrected Boolean @default(false)
+
+  @@map("holding_snapshot")
+}
+
+/// 规则配置
+model RuleConfig {
+  id               String   @id @default(cuid())
+  /// 规则名称
+  name             String
+  /// 规则类型：veto/reduce/boost
+  type             String
+  /// 触发条件描述
+  triggerCondition String
+  /// 阈值参数
+  thresholdValue   Float
+  /// 范围上限，用于区间规则
+  thresholdValueMax Float?
+  /// 适用标的：all/qdii/specific_code
+  applicableScope  String
+  /// 具体适用的ETF代码，逗号分隔
+  applicableCodes  String?
+  /// 规则理由
+  reason           String
+  isEnabled        Boolean  @default(true)
+  sortOrder        Int      @default(0)
+  /// V4 PRD§12.5: 规则分组 buy|pause|rebalance|data_quality|cash_pool
+  ruleGroup        String?
+  /// V4 PRD§12.5: 触发指标 pe_percentile|premium_today|deviation|dividend_yield_percentile
+  conditionMetric  String?
+  /// V4 PRD§12.5: 分位窗口 1y|3y|5y|10y|all
+  percentileWindow String?
+  /// V4 PRD§12.5: 操作符 gt|lt|between|eq
+  operator         String?
+  /// V4 PRD§12.5: 适用范围 all|specific
+  appliesTo        String?
+  /// V4 PRD§12.5: 优先级
+  priority         Int?
+  /// V4 PRD§12.5: 效果描述
+  effect           String?
+  /// V4 PRD§12.5: 前端展示文本
+  displayText      String?
+  /// V4 PRD§12.5: 策略文档引用
+  strategyDocRef   String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("rule_config")
+}
+
+/// 系统配置
+model SystemConfig {
+  id          String   @id @default(cuid())
+  /// 配置键名
+  key         String   @unique
+  /// 配置值
+  value       String
+  /// 配置说明
+  description String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("system_config")
+}
