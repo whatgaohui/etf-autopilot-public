@@ -9,8 +9,10 @@
 原则: 宏观模块只做提示, 不改金额、不触发卖出、不覆盖规则引擎。
 """
 import asyncio
+import json
 import logging
 import sqlite3
+import urllib.request
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -123,62 +125,83 @@ def _save_macro_metric(metric_type: str, trade_date: str, raw_value, clean_value
 
 
 async def fetch_cn_10y_bond_yield() -> Optional[float]:
-    """中国10年期国债收益率。优先用 akshare bond_china_yield,失败时降级到 bond_zh_us_rate() 的"中国国债收益率10年"列。返回百分点。"""
-    # 主源: bond_china_yield
+    """中国10年期国债收益率。拉取近30天历史以支持周/月变化计算。
+    主源 akshare bond_china_yield, 备源 bond_zh_us_rate。
+    返回最新值(百分点)。
+    """
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.bond_china_yield, start_date="", end_date="")
         if df is not None and len(df) > 0:
-            df = df.sort_values("日期", ascending=False)
-            latest = df.iloc[0]
-            val = latest.get("10年") or latest.get("10年期")
-            if val is not None:
-                val = float(val)
-                today = str(latest.get("日期", datetime.now().strftime("%Y-%m-%d")))[:10]
-                _save_macro_metric(METRIC_CN_10Y_BOND, today, val, val, "akshare", "bond_china_yield")
-                return val
+            # 存最近30天历史(用于算周/月变化)
+            df = df.sort_values("日期", ascending=False).head(30)
+            latest_val = None
+            for _, row in df.iterrows():
+                val = row.get("10年") or row.get("10年期")
+                if val is not None:
+                    val = float(val)
+                    today = str(row.get("日期", datetime.now().strftime("%Y-%m-%d")))[:10]
+                    _save_macro_metric(METRIC_CN_10Y_BOND, today, val, val, "akshare", "bond_china_yield")
+                    if latest_val is None:
+                        latest_val = val
+            if latest_val is not None:
+                return latest_val
     except Exception as e:
-        logger.warning(f"[MACRO] cn_10y_bond_yield primary (bond_china_yield) failed: {e}")
-    # 备源: bond_zh_us_rate() 含"中国国债收益率10年"列
+        logger.warning(f"[MACRO] cn_10y_bond_yield primary failed: {e}")
+    # 备源: bond_zh_us_rate
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.bond_zh_us_rate)
         if df is not None and len(df) > 0 and "中国国债收益率10年" in df.columns:
-            latest = df.iloc[-1]
-            val = latest.get("中国国债收益率10年")
-            if val is not None and str(val).lower() != "nan":
-                val = float(val)
-                today = str(latest.get("日期", datetime.now().strftime("%Y-%m-%d")))[:10]
-                _save_macro_metric(METRIC_CN_10Y_BOND, today, val, val, "akshare", "bond_zh_us_rate")
-                return val
+            df = df.tail(30)
+            latest_val = None
+            for _, row in df.iterrows():
+                val = row.get("中国国债收益率10年")
+                if val is not None and str(val).lower() != "nan":
+                    val = float(val)
+                    today = str(row.get("日期", datetime.now().strftime("%Y-%m-%d")))[:10]
+                    _save_macro_metric(METRIC_CN_10Y_BOND, today, val, val, "akshare", "bond_zh_us_rate")
+                    if latest_val is None:
+                        latest_val = val
+            if latest_val is not None:
+                return latest_val
     except Exception as e:
-        logger.warning(f"[MACRO] cn_10y_bond_yield fallback (bond_zh_us_rate) failed: {e}")
+        logger.warning(f"[MACRO] cn_10y_bond_yield fallback failed: {e}")
     return None
 
 
 async def fetch_us_10y_treasury_yield() -> Optional[float]:
-    """美国10年期国债收益率。用 akshare bond_zh_us_rate()(无参)取"美国国债收益率10年"列。返回百分点。"""
+    """美国10年期国债收益率。拉取近30天历史。用 akshare bond_zh_us_rate()。
+    返回百分点。
+    """
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.bond_zh_us_rate)
-        if df is None or len(df) == 0:
+        if df is None or len(df) == 0 or "美国国债收益率10年" not in df.columns:
             return None
-        latest = df.iloc[-1]
-        val = latest.get("美国国债收益率10年")
-        if val is None or str(val).lower() == "nan":
-            return None
-        val = float(val)
-        today = str(latest.get("日期", datetime.now().strftime("%Y-%m-%d")))[:10]
-        _save_macro_metric(METRIC_US_10Y_TREASURY, today, val, val, "akshare", "bond_zh_us_rate")
-        return val
+        df = df.tail(30)
+        latest_val = None
+        for _, row in df.iterrows():
+            val = row.get("美国国债收益率10年")
+            if val is None or str(val).lower() == "nan":
+                continue
+            val = float(val)
+            today = str(row.get("日期", datetime.now().strftime("%Y-%m-%d")))[:10]
+            _save_macro_metric(METRIC_US_10Y_TREASURY, today, val, val, "akshare", "bond_zh_us_rate")
+            if latest_val is None:
+                latest_val = val
+        return latest_val
     except Exception as e:
         logger.error(f"[MACRO] us_10y_treasury_yield error: {e}")
         return None
 
 
 async def fetch_usd_cnh() -> Optional[float]:
-    """USD/CNH 离岸人民币汇率。优先 akshare fx_spot_quote,失败时降级到 currency_boc_sina(美元)。返回汇率(如7.15)。"""
-    # 主源: fx_spot_quote
+    """USD/CNH 离岸人民币汇率。拉取近30天历史。
+    主源 akshare fx_spot_quote, 备源 currency_boc_sina(美元)。
+    返回汇率(如7.15)。
+    """
+    # 主源: fx_spot_quote (只返回当日现价, 无法取历史, 但仍是当日最新)
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.fx_spot_quote)
@@ -188,7 +211,6 @@ async def fetch_usd_cnh() -> Optional[float]:
                 latest = row.iloc[0]
                 val = latest.get("最新价")
                 if val is None:
-                    # 兜底取最后一列
                     val = latest.iloc[-1]
                 val = float(val)
                 today = datetime.now().strftime("%Y-%m-%d")
@@ -196,27 +218,73 @@ async def fetch_usd_cnh() -> Optional[float]:
                 return val
     except Exception as e:
         logger.warning(f"[MACRO] usd_cnh primary (fx_spot_quote) failed: {e}")
-    # 备源: currency_boc_sina(美元) 央行中间价(返回的是100美元兑人民币)
+    # 备源: currency_boc_sina(美元) 拉取历史30天
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.currency_boc_sina, symbol="美元")
         if df is not None and len(df) > 0:
-            latest = df.iloc[-1]
-            # 央行中间价单位是 100美元兑人民币,需要除以100
-            mid = latest.get("央行中间价") or latest.get("中行折算价")
-            if mid is not None:
-                val = float(mid) / 100.0
-                today = str(latest.get("日期", datetime.now().strftime("%Y-%m-%d")))[:10]
-                _save_macro_metric(METRIC_USD_CNH, today, val, val, "akshare", "currency_boc_sina")
-                return val
+            df = df.tail(30)
+            latest_val = None
+            for _, row in df.iterrows():
+                mid = row.get("央行中间价") or row.get("中行折算价")
+                if mid is not None:
+                    val = float(mid) / 100.0
+                    today = str(row.get("日期", datetime.now().strftime("%Y-%m-%d")))[:10]
+                    _save_macro_metric(METRIC_USD_CNH, today, val, val, "akshare", "currency_boc_sina")
+                    if latest_val is None:
+                        latest_val = val
+            if latest_val is not None:
+                return latest_val
     except Exception as e:
         logger.warning(f"[MACRO] usd_cnh fallback (currency_boc_sina) failed: {e}")
+    # 兼源3: Yahoo Finance USDCNY=X (历史)
+    try:
+        val = await _fetch_yahoo_quote("USDCNY=X", METRIC_USD_CNH, days=30)
+        if val is not None:
+            return val
+    except Exception as e:
+        logger.warning(f"[MACRO] usd_cnh yahoo fallback failed: {e}")
     return None
 
 
+async def _fetch_yahoo_quote(symbol: str, metric_type: str, days: int = 30) -> Optional[float]:
+    """从 Yahoo Finance API 拉取指标历史(用于 VIX / USD-CNH 等)。
+    存入 macro_metric_cache, 返回最新值。
+    """
+    import datetime as dt_mod
+    period1 = int((datetime.now() - timedelta(days=days)).timestamp())
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={period1}&period2={int(datetime.now().timestamp())}&interval=1d"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    resp = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=15))
+    data = json.loads(resp.read())
+    result = data["chart"]["result"][0]
+    quotes = result["indicators"]["quote"][0]["close"]
+    timestamps = result["timestamp"]
+    latest_val = None
+    for i in range(len(quotes)):
+        if quotes[i] is not None:
+            d = dt_mod.datetime.fromtimestamp(timestamps[i]).strftime("%Y-%m-%d")
+            v = float(quotes[i])
+            _save_macro_metric(metric_type, d, v, v, "yahoo", f"chart/{symbol}")
+            latest_val = v
+    return latest_val
+
+
 async def fetch_vix() -> Optional[float]:
-    """VIX恐慌指数。akshare 1.18 已无 index_vix;多源兜底: stock_us_hist(^VIX) → forex_pair_quote → None。返回指数值(如18.5)。"""
-    # 源1: stock_us_hist ^VIX
+    """VIX恐慌指数。akshare 1.18 已无 index_vix。
+    主源 Yahoo Finance ^VIX (拉取30天历史以支持周/月变化)。
+    备源 akshare stock_us_hist(^VIX)。
+    返回指数值(如18.5)。
+    """
+    # 主源: Yahoo Finance ^VIX (最稳定)
+    try:
+        val = await _fetch_yahoo_quote("%5EVIX", METRIC_VIX, days=30)
+        if val is not None:
+            logger.info(f"[MACRO] vix from yahoo: {val}")
+            return val
+    except Exception as e:
+        logger.warning(f"[MACRO] vix yahoo primary failed: {e}")
+    # 备源: akshare stock_us_hist ^VIX
     try:
         import akshare as ak
         df = await asyncio.to_thread(lambda: ak.stock_us_hist(symbol="^VIX", period="daily", adjust=""))
@@ -229,26 +297,7 @@ async def fetch_vix() -> Optional[float]:
                     _save_macro_metric(METRIC_VIX, today, val, val, "akshare", "stock_us_hist_^VIX")
                     return val
     except Exception as e:
-        logger.warning(f"[MACRO] vix stock_us_hist(^VIX) failed: {e}")
-    # 源2: akshare index_vix(老版本兼容)
-    try:
-        import akshare as ak
-        if hasattr(ak, "index_vix"):
-            df = await asyncio.to_thread(ak.index_vix)
-            if df is not None and len(df) > 0:
-                latest = df.iloc[-1]
-                val = None
-                for col in ["收盘价", "VIX", "close", "收盘"]:
-                    if col in latest.index:
-                        val = float(latest[col])
-                        break
-                if val is None:
-                    val = float(latest.iloc[-1])
-                today = str(latest.get("日期", latest.get("date", datetime.now().strftime("%Y-%m-%d"))))[:10]
-                _save_macro_metric(METRIC_VIX, today, val, val, "akshare", "index_vix")
-                return val
-    except Exception as e:
-        logger.warning(f"[MACRO] vix index_vix failed: {e}")
+        logger.warning(f"[MACRO] vix stock_us_hist fallback failed: {e}")
     return None
 
 
