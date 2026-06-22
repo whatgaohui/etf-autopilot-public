@@ -32,6 +32,7 @@ from models.schemas import (
     CalculateRequest,
     CalculateResponse,
     CashPoolSuggestion,
+    CashLedgerEntry,
     DataQuality,
     RebalanceSuggestion,
     RuleHit,
@@ -42,6 +43,15 @@ from services.data_clean_engine import clean_numeric
 # V4.1 S1-T7: 统一复用 data_clean_engine 的清洗逻辑（唯一来源），
 # 避免与 akshare_service / data_quality_score 的清洗逻辑漂移。
 safe_num = clean_numeric
+
+# V4.2 策略书§4/§5/§8: 从 config 导入分桶比例和阈值
+from config import (
+    BASE_BUCKET_RATIO,
+    VALUE_BUCKET_RATIO,
+    MAX_SINGLE_ETF_BUY_RATIO,
+    QDII_PREMIUM_HARD_VETO_TODAY,
+    QDII_PREMIUM_HARD_VETO_3D_AVG,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -369,8 +379,17 @@ def _check_veto_hits(
     data_quality: DataQuality,
     rules: list,
     premium_7d_avg: Optional[float] = None,
+    premium_3d_avg: Optional[float] = None,
 ) -> list[RuleHit]:
-    """Check veto rules. Returns list of RuleHit objects."""
+    """Check hard veto rules. Returns list of RuleHit objects.
+    
+    V4.2 策略书§5.1: 硬否决只保留:
+    - 黑名单
+    - 数据严重异常(质量不可用)
+    - QDII溢价红线(当日>3% 且 3日均值>2.5%)
+    - 停牌/流动性异常
+    PE/PB高估不再是硬否决, 改为软风控(见 _check_soft_wind_control)。
+    """
     hits: list[RuleHit] = []
 
     # 1) Data quality veto — conservative: key data missing → don't auto-buy
@@ -447,41 +466,134 @@ def _check_veto_hits(
                 ))
 
         elif "high_pe" in rule.id.lower() or "极高分位" in rule.name:
-            # PE percentile veto (default threshold 80)
-            if pe_percentile is not None and threshold is not None and pe_percentile > threshold:
-                hits.append(RuleHit(
-                    ruleType="veto",
-                    ruleName=rule.name,
-                    conditionText=f"PE分位 > {threshold}%",
-                    actualValue=f"{pe_percentile:.1f}%",
-                    threshold=f"{threshold}%",
-                    effect="本周不买入",
-                ))
+            # V4.2 策略书§5: PE/PB高估不再是硬否决, 改为软风控
+            # 软风控逻辑在 _check_soft_wind_control 中处理
+            pass
 
         elif "qdii_premium" in rule.id.lower() or "溢价红线" in rule.name:
-            if code in (rule.applicable_codes or []) and premium_today is not None and threshold is not None and premium_today > threshold:
-                # V4 策略书§3.3: 买入否决叠加3日/7日均值条件
-                # "当日溢价>3%，且近3日/7日均值不低" → 避免偶发异常误判
-                # 如果7日均值也有数据且>threshold*0.5（均值不低），则确认否决
-                # 如果7日均值数据缺失，保守起见仍否决（单日高溢价已足够风险）
+            # V4.2 策略书§8.1: QDII硬否决 — 当日>3% 且 3日均>2.5%
+            if code in (rule.applicable_codes or []) and premium_today is not None and premium_today > QDII_PREMIUM_HARD_VETO_TODAY:
                 avg_confirm = True
                 avg_hint = ""
-                if premium_7d_avg is not None:
-                    if premium_7d_avg < threshold * 0.5:
-                        # 7日均值较低，可能是偶发单日异常，降级为减量而非否决
+                soft_only = False
+                if premium_3d_avg is not None:
+                    if premium_3d_avg < QDII_PREMIUM_HARD_VETO_3D_AVG:
                         avg_confirm = False
-                        avg_hint = f"（7日均{premium_7d_avg:.2f}%较低，可能偶发异常，降级为减量）"
+                        soft_only = True
+                        avg_hint = f"（3日均{premium_3d_avg:.2f}%<{QDII_PREMIUM_HARD_VETO_3D_AVG}%，可能偶发，降级为软风控）"
                 if avg_confirm:
                     hits.append(RuleHit(
                         ruleType="veto",
                         ruleName=rule.name,
-                        conditionText=f"QDII溢价率 > {threshold}%{avg_hint}",
-                        actualValue=f"{premium_today:.2f}%" + (f" / 7日均{premium_7d_avg:.2f}%" if premium_7d_avg is not None else ""),
-                        threshold=f"{threshold}%",
-                        effect="本周不买入",
+                        conditionText=f"QDII溢价率 > {QDII_PREMIUM_HARD_VETO_TODAY}% 且 3日均 > {QDII_PREMIUM_HARD_VETO_3D_AVG}%{avg_hint}",
+                        actualValue=f"{premium_today:.2f}% / 3日均{premium_3d_avg:.2f}%" if premium_3d_avg is not None else f"{premium_today:.2f}%",
+                        threshold=f">{QDII_PREMIUM_HARD_VETO_TODAY}% 且 3日均>{QDII_PREMIUM_HARD_VETO_3D_AVG}%",
+                        effect="本周不买入（硬否决）",
+                    ))
+                elif soft_only:
+                    hits.append(RuleHit(
+                        ruleType="info",
+                        ruleName=rule.name + "（软风控）",
+                        conditionText=f"QDII溢价率 > {QDII_PREMIUM_HARD_VETO_TODAY}%{avg_hint}",
+                        actualValue=f"{premium_today:.2f}% / 3日均{premium_3d_avg:.2f}%",
+                        threshold=f">{QDII_PREMIUM_HARD_VETO_TODAY}%",
+                        effect="增强仓受限，基础仓可投",
                     ))
 
     return hits
+
+
+def _check_soft_wind_control(
+    code: str,
+    pe_percentile: Optional[float],
+    rules: list,
+) -> tuple[str, list[RuleHit]]:
+    """V4.2 策略书§5.2: 软风控4档检查。
+    
+    返回 (soft_level, hits):
+    - soft_level: none | reduce | forbid_enhancement | minimal_base | pause_all
+    - hits: 软风控命中记录
+    
+    4档逻辑:
+    - 60-80%: reduce (增强仓减量×0.5, 基础仓正常)
+    - 80-90%: forbid_enhancement (禁增强仓, 仅基础仓)
+    - 90-95%: minimal_base (仅严重欠配时极小额基础仓)
+    - >95%: pause_all (暂停新增, 基础仓+增强仓都停)
+    """
+    hits: list[RuleHit] = []
+    soft_level = "none"
+    
+    if pe_percentile is None:
+        return soft_level, hits
+    
+    for rule in rules:
+        if not rule.is_enabled:
+            continue
+        # 检查 soft_veto_enhancement 和 soft_veto_all 类型的规则
+        if rule.type not in ("soft_veto_enhancement", "soft_veto_all"):
+            continue
+        if not _rule_matches(rule, code):
+            continue
+        
+        threshold = rule.threshold_value
+        threshold_max = rule.threshold_value_max
+        
+        if rule.type == "soft_veto_enhancement":
+            # 80-90% 或 90-95% 区间
+            if threshold_max is not None and threshold is not None:
+                if threshold <= pe_percentile < threshold_max:
+                    if threshold >= 90:
+                        soft_level = "minimal_base"
+                        hits.append(RuleHit(
+                            ruleType="info",
+                            ruleName=rule.name,
+                            conditionText=f"PE分位 {pe_percentile:.1f}% 在 {threshold}-{threshold_max}% 区间",
+                            actualValue=f"{pe_percentile:.1f}%",
+                            threshold=f"{threshold}-{threshold_max}%",
+                            effect="仅严重欠配时允许极小额基础仓",
+                        ))
+                    else:
+                        soft_level = "forbid_enhancement"
+                        hits.append(RuleHit(
+                            ruleType="info",
+                            ruleName=rule.name,
+                            conditionText=f"PE分位 {pe_percentile:.1f}% 在 {threshold}-{threshold_max}% 区间",
+                            actualValue=f"{pe_percentile:.1f}%",
+                            threshold=f"{threshold}-{threshold_max}%",
+                            effect="禁止增强仓，仅允许基础仓",
+                        ))
+        elif rule.type == "soft_veto_all":
+            # >95% 暂停全部
+            if threshold is not None and pe_percentile >= threshold:
+                soft_level = "pause_all"
+                hits.append(RuleHit(
+                    ruleType="info",
+                    ruleName=rule.name,
+                    conditionText=f"PE分位 {pe_percentile:.1f}% >= {threshold}%",
+                    actualValue=f"{pe_percentile:.1f}%",
+                    threshold=f">={threshold}%",
+                    effect="暂停新增（基础仓+增强仓都停）",
+                ))
+    
+    # 同时检查 reduce 类型的 PE 规则(60-80%)
+    if soft_level == "none":
+        for rule in rules:
+            if not rule.is_enabled:
+                continue
+            if rule.type != "reduce":
+                continue
+            if not _rule_matches(rule, code):
+                continue
+            if "high_pe" in rule.id.lower() or "偏高" in rule.name:
+                threshold = rule.threshold_value
+                threshold_max = rule.threshold_value_max
+                if threshold is not None and threshold_max is not None:
+                    if threshold <= pe_percentile < threshold_max:
+                        soft_level = "reduce"
+                        # reduce 命中由 _check_reduce_hits 正式记录, 这里只标记级别
+                        break
+    
+    return soft_level, hits
 
 
 def _check_reduce_hits(
@@ -1005,10 +1117,26 @@ def calculate_suggestions(
         if h.code in investable_codes:
             invested_asset_value += h.market_value
 
+    # V4.2 策略书§3.2: 权益配置基准(分母陷阱修复)
+    # 权益配置基准 = 6只ETF市值 + 再平衡备用金 + 待投权益现金 + QDII挂起资金
+    cash_balances = request.cash_subaccount_balances or {}
+    rebalance_equity_reserve = float(cash_balances.get("rebalance_equity_reserve", 0))
+    weekly_unallocated_cash = float(cash_balances.get("weekly_unallocated_cash", 0))
+    qdii_pending_cash_sp500 = float(cash_balances.get("qdii_pending_cash_sp500", 0))
+    qdii_pending_cash_nasdaq = float(cash_balances.get("qdii_pending_cash_nasdaq", 0))
+    
+    equity_allocation_base = (
+        invested_asset_value
+        + rebalance_equity_reserve
+        + weekly_unallocated_cash
+        + qdii_pending_cash_sp500
+        + qdii_pending_cash_nasdaq
+    )
+
     # ──────────────────────────────────────────────
-    # Step 3: after_budget_total
+    # Step 3: after_budget_total (用权益配置基准做分母)
     # ──────────────────────────────────────────────
-    after_budget_total = invested_asset_value + weekly_budget
+    after_budget_total = equity_allocation_base + weekly_budget
 
     # ──────────────────────────────────────────────
     # Step 4-5: Compute gap fields & run veto check for each investable holding
@@ -1059,6 +1187,7 @@ def calculate_suggestions(
             data_quality=dq,
             rules=rules,
             premium_7d_avg=premium_7d_avg,
+            premium_3d_avg=safe_num(md.get("premium_3d_avg")),
         )
         reduce_hits = _check_reduce_hits(
             code=code,
@@ -1072,6 +1201,13 @@ def calculate_suggestions(
             code=code,
             current_ratio=current_ratio,
             target_ratio=target_ratio,
+            pe_percentile=buy_pe_percentile,
+            rules=rules,
+        )
+
+        # V4.2 策略书§5: 软风控4档检查
+        soft_level, soft_hits = _check_soft_wind_control(
+            code=code,
             pe_percentile=buy_pe_percentile,
             rules=rules,
         )
@@ -1109,74 +1245,179 @@ def calculate_suggestions(
             "veto_hits": veto_hits,
             "reduce_hits": reduce_hits,
             "boost_hits": boost_hits,
+            "soft_wind_control": soft_level,
+            "soft_hits": soft_hits,
             "vetoed": vetoed,
             "over_allocated": over_allocated,
         }
 
     # ──────────────────────────────────────────────
-    # Step 6: Build investable pool = base_gap>0 AND not vetoed
+    # V4.2 Step 6: 构建两个池子
+    # base_pool: gap>0 且 非硬否决 (基础仓可投, 不受软风控限制)
+    # value_pool: gap>0 且 非硬否决 且 非pause_all (增强仓可投, 受软风控限制)
     # ──────────────────────────────────────────────
-    pool_codes = [
+    hard_vetoed_codes = {c for c, it in per_item.items() if it["vetoed"]}
+    base_pool = [
         c for c, it in per_item.items()
         if it["base_gap_amount"] > 0 and not it["vetoed"]
     ]
+    value_pool = [
+        c for c, it in per_item.items()
+        if it["base_gap_amount"] > 0 and not it["vetoed"]
+        and it["soft_wind_control"] != "pause_all"
+    ]
 
     # ──────────────────────────────────────────────
-    # Step 7: Allocate budget by gap proportion
+    # V4.2 Step 7: 预算分桶 — 基础仓40% + 增强仓60%
     # ──────────────────────────────────────────────
-    total_gap = sum(per_item[c]["base_gap_amount"] for c in pool_codes)
+    base_budget = weekly_budget * BASE_BUCKET_RATIO
+    value_budget = weekly_budget * VALUE_BUCKET_RATIO
+    
+    total_gap_base = sum(per_item[c]["base_gap_amount"] for c in base_pool)
+    total_gap_value = sum(per_item[c]["base_gap_amount"] for c in value_pool)
 
+    # 基础仓: 按缺口比例分配(只避硬否决, 不受软风控限制)
     base_amounts: dict[str, float] = {}
-    if total_gap > 0:
-        for c in pool_codes:
-            base_amounts[c] = weekly_budget * per_item[c]["base_gap_amount"] / total_gap
+    if total_gap_base > 0:
+        for c in base_pool:
+            base_amounts[c] = base_budget * per_item[c]["base_gap_amount"] / total_gap_base
     else:
-        # All gaps closed / all vetoed: no allocation this week
-        for c in pool_codes:
+        for c in base_pool:
             base_amounts[c] = 0.0
 
+    # 增强仓: 按缺口比例分配 + 软风控减量
+    value_amounts: dict[str, float] = {}
+    if total_gap_value > 0:
+        for c in value_pool:
+            value_amounts[c] = value_budget * per_item[c]["base_gap_amount"] / total_gap_value
+    else:
+        for c in value_pool:
+            value_amounts[c] = 0.0
+
     # ──────────────────────────────────────────────
-    # Step 8: Apply reduce/boost multipliers (reduce > boost)
+    # V4.2 Step 8: 减量/加量只作用于增强仓; 基础仓不受影响
+    # 软风控级别影响增强仓:
+    #   reduce → 增强仓×0.5
+    #   forbid_enhancement → 增强仓=0
+    #   minimal_base → 增强仓=0
+    #   pause_all → 增强仓=0 (已在value_pool排除)
     # ──────────────────────────────────────────────
     pre_cap_amounts: dict[str, float] = {}
     multipliers: dict[str, float] = {}
     effective_hits: dict[str, list] = {}
+    bucket_types: dict[str, str] = {}
 
-    for c in pool_codes:
+    all_pool_codes = set(base_pool) | set(value_pool)
+    for c in all_pool_codes:
         it = per_item[c]
         reduce_hits = it["reduce_hits"]
         boost_hits = it["boost_hits"]
-
-        if reduce_hits:
+        soft_level = it["soft_wind_control"]
+        
+        base_amt = base_amounts.get(c, 0.0)
+        value_amt = value_amounts.get(c, 0.0)
+        
+        # 增强仓受软风控和reduce/boost影响
+        if soft_level in ("forbid_enhancement", "minimal_base", "pause_all"):
+            # 禁止增强仓
+            value_amt = 0.0
+            multiplier = 0.0
+            effective_hits[c] = list(it["soft_hits"])
+            if reduce_hits:
+                effective_hits[c] += reduce_hits
+                effective_hits[c].append(RuleHit(
+                    rule_type="info", rule_name="减量规则",
+                    condition_text="被软风控覆盖", actual_value="",
+                    threshold="", effect="未生效"))
+            if boost_hits:
+                effective_hits[c] += [RuleHit(
+                    rule_type="info", rule_name=bh.rule_name,
+                    condition_text=bh.condition_text + "（被软风控压制）",
+                    actual_value=bh.actual_value, threshold=bh.threshold,
+                    effect="未生效") for bh in boost_hits]
+        elif reduce_hits:
             multiplier = 0.5
+            value_amt = value_amt * multiplier
             effective_hits[c] = reduce_hits
             if boost_hits:
-                # reduce wins; keep boost as info
-                effective_hits[c] = reduce_hits + [
-                    RuleHit(
-                        rule_type="info",
-                        rule_name=bh.rule_name,
-                        condition_text=bh.condition_text + "（被减量规则压制，未生效）",
-                        actual_value=bh.actual_value,
-                        threshold=bh.threshold,
-                        effect="未生效",
-                    ) for bh in boost_hits
-                ]
-                logger.info(f"[MULTIPLIER] {c} both reduce & boost hit, reduce wins → 0.5")
+                effective_hits[c] += [RuleHit(
+                    rule_type="info", rule_name=bh.rule_name,
+                    condition_text=bh.condition_text + "（被减量压制）",
+                    actual_value=bh.actual_value, threshold=bh.threshold,
+                    effect="未生效") for bh in boost_hits]
         elif boost_hits:
             multiplier = 2.0
+            value_amt = value_amt * multiplier
             effective_hits[c] = boost_hits
         else:
             multiplier = 1.0
             effective_hits[c] = []
-
+        
+        # 软风控 info hits 也加入
+        for sh in it["soft_hits"]:
+            if sh not in effective_hits[c]:
+                effective_hits[c].append(sh)
+        
         multipliers[c] = multiplier
-        pre_cap_amounts[c] = base_amounts[c] * multiplier
+        pre_cap_amounts[c] = base_amt + value_amt
+        # 标记桶类型
+        if base_amt > 0 and value_amt > 0:
+            bucket_types[c] = "base+value"
+        elif base_amt > 0:
+            bucket_types[c] = "base_bucket"
+        elif value_amt > 0:
+            bucket_types[c] = "value_bucket"
+        else:
+            bucket_types[c] = "none"
+
+    # ──────────────────────────────────────────────
+    # V4.2 Step 6.5: 全体否决兜底机制(策略书§10)
+    # ──────────────────────────────────────────────
+    fallback_triggered = False
+    fallback_reason = ""
+    if not base_pool and not value_pool:
+        # 所有标的全否决, 判断原因
+        all_data_veto = all(
+            any("数据质量" in h.rule_name for h in it["veto_hits"])
+            for it in per_item.values() if it.get("vetoed")
+        )
+        if all_data_veto:
+            fallback_triggered = True
+            fallback_reason = "全部因数据异常, 不生成自动建议, 要求人工确认"
+        else:
+            # 检查是否全部因硬否决(非数据)
+            all_hard_veto = all(it["vetoed"] for it in per_item.values())
+            if all_hard_veto:
+                fallback_triggered = True
+                fallback_reason = "全部因硬否决, 预算进入华宝添益对应子账户"
+            else:
+                # 软风控场景: 启动基础定投仓投向最欠配+无硬否决标的
+                fallback_triggered = True
+                fallback_reason = "全部因软风控, 启动基础定投仓投向最欠配标的"
+                # 找最欠配(当前占比/目标占比 最低)且无硬否决的标的
+                candidates = [
+                    (c, it) for c, it in per_item.items()
+                    if not it["vetoed"] and it["soft_wind_control"] != "pause_all"
+                ]
+                if candidates:
+                    # 按欠配程度排序(当前占比/目标占比, 越小越欠配)
+                    candidates.sort(key=lambda x: x[1]["current_ratio"] / max(x[1]["target_ratio"], 0.01))
+                    best_code, best_it = candidates[0]
+                    base_amounts[best_code] = base_budget
+                    pre_cap_amounts[best_code] = base_budget
+                    bucket_types[best_code] = "base_bucket"
+                    multipliers[best_code] = 1.0
+                    effective_hits[best_code] = [RuleHit(
+                        rule_type="info", rule_name="基础定投仓兜底",
+                        condition_text=f"全否决兜底: 投向最欠配标的 {best_code}",
+                        actual_value=best_code, threshold="",
+                        effect=f"基础仓¥{base_budget:.0f}")]
+                    logger.info(f"[FALLBACK] 全否决兜底, 基础仓投向 {best_code}")
 
     # ──────────────────────────────────────────────
     # Step 9: Gap cap — never buy more than the gap
     # ──────────────────────────────────────────────
-    for c in pool_codes:
+    for c in all_pool_codes:
         cap = per_item[c]["base_gap_amount"]
         if pre_cap_amounts[c] > cap:
             pre_cap_amounts[c] = cap
@@ -1187,7 +1428,7 @@ def calculate_suggestions(
     total_pre_cap = sum(pre_cap_amounts.values())
     if total_pre_cap > weekly_budget and total_pre_cap > 0:
         scale = weekly_budget / total_pre_cap
-        for c in pool_codes:
+        for c in all_pool_codes:
             pre_cap_amounts[c] = pre_cap_amounts[c] * scale
         logger.info(
             f"[BUDGET] Total pre-cap {total_pre_cap:.0f} > budget {weekly_budget:.0f}, "
@@ -1252,6 +1493,8 @@ def calculate_suggestions(
                 rulesHit=[info_hit],
                 multiplier=0.0,
                 vetoed=True,
+                bucketType="none",
+                softWindControl="none",
             ))
             continue
 
@@ -1373,6 +1616,10 @@ def calculate_suggestions(
             rulesHit=eff_hits,
             multiplier=multiplier,
             vetoed=vetoed,
+            # V4.2 策略书§4/§5: 桶类型 + 软风控级别
+            # vetoed 和 over_allocated 的 bucket_type 应为 "none" (它们不在 base_pool/value_pool 中, 默认 "none")
+            bucketType=bucket_types.get(code, "none"),
+            softWindControl=per_item.get(code, {}).get("soft_wind_control", "none") if code in investable_codes else "none",
         ))
 
     total_allocated = sum(s.amount for s in suggestions)
@@ -1393,23 +1640,71 @@ def calculate_suggestions(
     total_rebalanced = sum(r.sell_amount for r in rebalance_suggestions)
 
     # ──────────────────────────────────────────────
-    # V4 Step 14: Cash Pool Engine (§8) — 未分配+再平衡释放资金→华宝添益
+    # V4.2 Step 14: Cash Pool Engine — 现金子账户路由(策略书§3.1)
     # ──────────────────────────────────────────────
     cash_pool_suggestions: list[CashPoolSuggestion] = []
+    cash_movements: list[CashLedgerEntry] = []
+    
+    # 未分配预算 → weekly_unallocated_cash (计入权益基准)
     if total_unallocated > 0:
         cash_pool_suggestions.append(CashPoolSuggestion(
             code=CASH_POOL_CODE, name="华宝添益ETF",
             inflowType="unallocated",
             inflowAmount=total_unallocated,
-            description=f"本周未分配新增预算¥{total_unallocated:,}转入华宝添益。",
+            description=f"本周未分配新增预算¥{total_unallocated:,}转入华宝添益(weekly_unallocated_cash)。",
+            subaccountType="weekly_unallocated_cash",
+            countsAsEquityBase=True,
         ))
+        cash_movements.append(CashLedgerEntry(
+            cashAccountType="weekly_unallocated_cash",
+            sourceEvent="weekly_unallocated",
+            amount=total_unallocated,
+            createdAt=datetime.now().isoformat(),
+            status="active",
+        ))
+    
+    # 再平衡释放 → rebalance_equity_reserve (计入权益基准)
     if total_rebalanced > 0:
         cash_pool_suggestions.append(CashPoolSuggestion(
             code=CASH_POOL_CODE, name="华宝添益ETF",
             inflowType="rebalance_release",
             inflowAmount=total_rebalanced,
-            description=f"本周再平衡释放资金¥{total_rebalanced:,}转入华宝添益。",
+            description=f"本周再平衡释放资金¥{total_rebalanced:,}转入华宝添益(rebalance_equity_reserve)。",
+            subaccountType="rebalance_equity_reserve",
+            countsAsEquityBase=True,
         ))
+        cash_movements.append(CashLedgerEntry(
+            cashAccountType="rebalance_equity_reserve",
+            sourceEvent="rebalance_release",
+            amount=total_rebalanced,
+            createdAt=datetime.now().isoformat(),
+            status="active",
+        ))
+    
+    # V4.2 策略书§8.2: QDII硬否决阻断的预算 → qdii_pending_cash 子账户
+    for c in hard_vetoed_codes:
+        if c in QDII_CODES:
+            # QDII被硬否决, 预算进入挂起池
+            qdii_subaccount = "qdii_pending_cash_sp500" if c == "513500" else "qdii_pending_cash_nasdaq"
+            qdii_blocked_amount = int(round(weekly_budget * target_ratios.get(c, 0)))
+            if qdii_blocked_amount > 0:
+                cash_pool_suggestions.append(CashPoolSuggestion(
+                    code=CASH_POOL_CODE, name="华宝添益ETF",
+                    inflowType="qdii_blocked",
+                    inflowAmount=qdii_blocked_amount,
+                    description=f"{c}因QDII溢价硬否决, 预算¥{qdii_blocked_amount:,}进入{qdii_subaccount}。",
+                    subaccountType=qdii_subaccount,
+                    countsAsEquityBase=True,
+                ))
+                cash_movements.append(CashLedgerEntry(
+                    cashAccountType=qdii_subaccount,
+                    sourceEvent="qdii_blocked",
+                    sourceEtf=c,
+                    amount=qdii_blocked_amount,
+                    createdAt=datetime.now().isoformat(),
+                    status="active",
+                ))
+    
     cash_pool_inflow = total_unallocated + total_rebalanced
 
     # Find the latest updated_at in market_data for the snapshot
@@ -1458,17 +1753,20 @@ def calculate_suggestions(
 
     return CalculateResponse(
         calculationId=f"calc-{uuid.uuid4().hex[:12]}",
-        engineVersion="target-gap-rebalance-v4",
-        strategyVersion="strategy-v4",
+        engineVersion="target-gap-rebalance-v4.2",
+        strategyVersion="strategy-v4.2",
         calculatedAt=datetime.now().isoformat(),
         allocationStrategy="conservative",
         dataSnapshot={
             "marketDataCacheTime": latest_updated or datetime.now().isoformat(),
-            "rulesConfigVersion": "rules-v4",
-            "strategyVersion": "strategy-v4",
+            "rulesConfigVersion": "rules-v4.2",
+            "strategyVersion": "strategy-v4.2",
             "investedAssetValue": round(invested_asset_value, 2),
+            "equityAllocationBase": round(equity_allocation_base, 2),
             "afterBudgetTotal": round(after_budget_total, 2),
-            "totalGap": round(total_gap, 2) if total_gap > 0 else 0.0,
+            "totalGap": round(total_gap_value, 2) if total_gap_value > 0 else 0.0,
+            "baseBudget": round(base_budget, 2),
+            "valueBudget": round(value_budget, 2),
         },
         totalBudget=int(round(weekly_budget)),
         totalAllocated=total_allocated,
@@ -1488,4 +1786,15 @@ def calculate_suggestions(
         pauseSuggestions=[s.model_dump(by_alias=True) for s in pause_suggestions],
         dataQualitySummary=dq_summary,
         rulesHitSummary=rh_summary,
+        # V4.2 动态资金流修正字段
+        equityAllocationBase=round(equity_allocation_base, 2),
+        baseBucketAmount=int(round(base_budget)),
+        valueBucketAmount=int(round(value_budget)),
+        rebalanceEquityReserve=int(round(rebalance_equity_reserve)),
+        weeklyUnallocatedCash=total_unallocated,
+        qdiiPendingCashSp500=int(round(qdii_pending_cash_sp500)),
+        qdiiPendingCashNasdaq=int(round(qdii_pending_cash_nasdaq)),
+        cashMovements=cash_movements,
+        fallbackTriggered=fallback_triggered,
+        fallbackReason=fallback_reason,
     )

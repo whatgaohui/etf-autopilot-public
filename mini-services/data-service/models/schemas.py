@@ -45,6 +45,11 @@ class CalculateRequest(BaseModel):
     holding_snapshot_id: str = Field("", alias="holdingSnapshotId", description="持仓快照ID")
     strategy_version: str = Field("strategy-v4", alias="strategyVersion", description="策略版本")
     allocation_mode: str = Field("conservative", alias="allocationMode", description="分配模式 conservative|neutral")
+    # V4.2 策略书§3.1: 现金子账户余额(从 cash_subaccount 表读取, 由 API 层注入)
+    # 键: daily_cash / weekly_unallocated_cash / rebalance_equity_reserve /
+    #     qdii_pending_cash_sp500 / qdii_pending_cash_nasdaq / manual_cash
+    # 值: 余额(元)
+    cash_subaccount_balances: dict = Field(default_factory=dict, alias="cashSubaccountBalances")
 
     model_config = {"populate_by_name": True}
 
@@ -136,6 +141,10 @@ class SuggestionItem(BaseModel):
     rules_hit: list[RuleHit] = Field(default_factory=list, alias="rulesHit")
     multiplier: float = Field(1.0, description="Applied multiplier: 0.5 / 1.0 / 2.0")
     vetoed: bool = Field(False, description="Whether this ETF is vetoed this week")
+    # V4.2 策略书§4: 资金桶类型 base_bucket | value_bucket | base+value | none
+    bucket_type: str = Field("none", alias="bucketType", description="base_bucket | value_bucket | base+value | none")
+    # V4.2 策略书§5: 软风控级别 none | reduce | forbid_enhancement | minimal_base | pause_all
+    soft_wind_control: str = Field("none", alias="softWindControl", description="软风控级别")
 
     model_config = {"populate_by_name": True}
 
@@ -173,17 +182,46 @@ class RebalanceSuggestion(BaseModel):
     reason_summary: str = Field("", alias="reasonSummary")
     rules_hit: list[RuleHit] = Field(default_factory=list, alias="rulesHit")
 
+    # V4.2 策略书§4: 资金桶类型 base_bucket | value_bucket | none
+    bucket_type: str = Field("none", alias="bucketType", description="base_bucket | value_bucket | none")
+    # V4.2 策略书§5: 软风控级别 none | reduce | forbid_enhancement | minimal_base | pause_all
+    soft_wind_control: str = Field("none", alias="softWindControl", description="软风控级别")
+
     model_config = {"populate_by_name": True}
 
 
-# ─── Cash Pool Suggestion (V4 strategy doc §8) ───
+# ─── Cash Pool Suggestion (V4 strategy doc §8, V4.2 策略书§3.1 现金子账户) ───
 class CashPoolSuggestion(BaseModel):
-    """现金水池流向建议。华宝添益(511990)承接未投资资金和再平衡释放资金。"""
+    """现金水池流向建议。华宝添益(511990)承接未投资资金和再平衡释放资金。
+    
+    V4.2 新增 subaccount_type 字段, 区分资金身份:
+    daily_cash / weekly_unallocated_cash / rebalance_equity_reserve /
+    qdii_pending_cash_sp500 / qdii_pending_cash_nasdaq / manual_cash
+    """
     code: str = "511990"
     name: str = "华宝添益ETF"
-    inflow_type: str = Field(..., alias="inflowType", description="unallocated | rebalance_release")
+    inflow_type: str = Field(..., alias="inflowType", description="unallocated | rebalance_release | qdii_blocked")
     inflow_amount: int = Field(..., alias="inflowAmount")
     description: str = Field("", alias="description")
+    # V4.2 策略书§3.1: 现金子账户类型
+    subaccount_type: str = Field("weekly_unallocated_cash", alias="subaccountType", description="现金子账户类型")
+    # V4.2: 该子账户资金是否计入权益配置基准
+    counts_as_equity_base: bool = Field(True, alias="countsAsEquityBase", description="是否计入权益配置基准")
+
+    model_config = {"populate_by_name": True}
+
+
+# ─── V4.2 策略书§15: 现金台账条目 ───
+class CashLedgerEntry(BaseModel):
+    """现金台账条目, 记录每笔资金流动的身份和去向。"""
+    cash_ledger_id: str = Field("", alias="cashLedgerId")
+    cash_account_type: str = Field(..., alias="cashAccountType", description="现金子账户类型")
+    source_event: str = Field(..., alias="sourceEvent", description="weekly_unallocated | rebalance_release | qdii_blocked | manual")
+    source_etf: str = Field("", alias="sourceEtf", description="来源ETF代码(如QDII阻断时)")
+    amount: int = Field(..., alias="amount")
+    created_at: str = Field("", alias="createdAt")
+    released_at: Optional[str] = Field(None, alias="releasedAt")
+    status: str = Field("active", alias="status", description="active | released | permanent")
 
     model_config = {"populate_by_name": True}
 
@@ -220,6 +258,21 @@ class CalculateResponse(BaseModel):
     # 结构：{primary: str, backup: str, crossValidated: bool, totalChecks: int,
     #        passed: int, inconsistent: int, failed: int, details: [{code, field, ...}]}
     source_comparison: dict = Field(default_factory=dict, alias="sourceComparison")
+    # V4.2 策略书§3.2/§4/§15: 动态资金流修正字段
+    equity_allocation_base: float = Field(0, alias="equityAllocationBase", description="权益配置基准(含挂起资金)")
+    base_bucket_amount: int = Field(0, alias="baseBucketAmount", description="基础定投仓金额")
+    value_bucket_amount: int = Field(0, alias="valueBucketAmount", description="估值增强仓金额")
+    rebalance_equity_reserve: int = Field(0, alias="rebalanceEquityReserve", description="再平衡权益备用金余额")
+    weekly_unallocated_cash: int = Field(0, alias="weeklyUnallocatedCash", description="本周未分配权益现金")
+    qdii_pending_cash_sp500: int = Field(0, alias="qdiiPendingCashSp500", description="标普500挂起资金余额")
+    qdii_pending_cash_nasdaq: int = Field(0, alias="qdiiPendingCashNasdaq", description="纳斯达克挂起资金余额")
+    # V4.2 策略书§15: 现金台账
+    cash_movements: list[CashLedgerEntry] = Field(default_factory=list, alias="cashMovements")
+    # V4.2 策略书§10: 全体否决兜底
+    fallback_triggered: bool = Field(False, alias="fallbackTriggered", description="是否触发了全否决兜底")
+    fallback_reason: str = Field("", alias="fallbackReason", description="兜底原因说明")
+    # V4.2 PRD§11: 宏观提示(占位, P1实现)
+    macro_prompts: list = Field(default_factory=list, alias="macroPrompts")
 
     model_config = {"populate_by_name": True}
 

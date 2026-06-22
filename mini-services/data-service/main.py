@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -166,8 +167,57 @@ def _init_db():
 
         # V4.1 PRD §13.8: data_quality_result 表由 services/data_quality_score.py 管理（幂等建表）
 
+        # V4.2 策略书§3.1/§15: 现金子账户表
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS cash_subaccount (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_type TEXT NOT NULL UNIQUE,
+                balance REAL NOT NULL DEFAULT 0,
+                counts_as_equity_base BOOLEAN NOT NULL DEFAULT 1,
+                description TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_cash_subaccount_type ON cash_subaccount(account_type);
+            """
+        )
+
+        # V4.2 策略书§15: 现金台账表
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS cash_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cash_ledger_id TEXT UNIQUE,
+                cash_account_type TEXT NOT NULL,
+                source_event TEXT NOT NULL,
+                source_etf TEXT,
+                amount REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                released_at TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+            CREATE INDEX IF NOT EXISTS idx_cash_ledger_type ON cash_ledger(cash_account_type, status);
+            CREATE INDEX IF NOT EXISTS idx_cash_ledger_status ON cash_ledger(status, created_at DESC);
+            """
+        )
+
+        # V4.2: 初始化默认子账户(如果不存在)
+        for acct_type in ("daily_cash", "weekly_unallocated_cash", "rebalance_equity_reserve",
+                          "qdii_pending_cash_sp500", "qdii_pending_cash_nasdaq", "manual_cash"):
+            conn.execute(
+                "INSERT OR IGNORE INTO cash_subaccount (account_type, balance, counts_as_equity_base, description, updated_at) VALUES (?, 0, ?, ?, ?)",
+                (acct_type,
+                 0 if acct_type in ("daily_cash", "manual_cash") else 1,
+                 {"daily_cash": "日常现金", "weekly_unallocated_cash": "本周未分配权益现金",
+                  "rebalance_equity_reserve": "再平衡权益备用金",
+                  "qdii_pending_cash_sp500": "标普500QDII挂起资金",
+                  "qdii_pending_cash_nasdaq": "纳斯达克QDII挂起资金",
+                  "manual_cash": "用户手动指定现金"}.get(acct_type, ""),
+                 datetime.now().isoformat())
+            )
+
         conn.commit()
-        logger.info(f"[DB] Database initialized at {DB_PATH} (V4.1 schema: raw/clean/fetch_log/compare/quality)")
+        logger.info(f"[DB] Database initialized at {DB_PATH} (V4.2 schema: cash_subaccount/cash_ledger)")
     finally:
         conn.close()
 

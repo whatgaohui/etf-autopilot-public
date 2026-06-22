@@ -82,6 +82,39 @@ DEFAULT_TARGET_RATIOS = {
 # Default weekly budget
 DEFAULT_WEEKLY_BUDGET = 40000.0
 
+# V4.2 策略书§4: 每周预算分桶比例
+BASE_BUCKET_RATIO = 0.40  # 基础定投仓 40%, 只避开硬否决
+VALUE_BUCKET_RATIO = 0.60  # 估值增强仓 60%, 受估值/溢价约束
+# V4.2 策略书§4.1: base_bucket_ratio 可调范围 30%~50%
+BASE_BUCKET_RATIO_MIN = 0.30
+BASE_BUCKET_RATIO_MAX = 0.50
+
+# V4.2 策略书§7.3: 单只ETF单周买入上限占本周预算的比例
+MAX_SINGLE_ETF_BUY_RATIO = 0.70
+
+# V4.2 策略书§8.4: QDII挂起资金释放计划
+QDII_RELEASE_PLAN_WEEKS = 8  # 默认8周分批释放
+QDII_RELEASE_PLAN_WEEKS_MIN = 4
+QDII_RELEASE_PLAN_WEEKS_MAX = 12
+QDII_RELEASE_CAP_MULTIPLIER = 2.0  # 单周释放上限 = min(余额/剩余周数, 正常周预算×2)
+
+# V4.2 策略书§8.1: QDII硬否决条件 — 当日溢价>3% 且 3日均值>2.5%
+QDII_PREMIUM_HARD_VETO_TODAY = 3.0  # 当日溢价红线
+QDII_PREMIUM_HARD_VETO_3D_AVG = 2.5  # 3日均值确认线
+
+# V4.2 策略书§8.5: 连续N周溢价阻断则提示场外基金
+QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD = 4
+
+# V4.2 策略书§3.1: 华宝添益现金子账户类型
+CASH_SUBACCOUNT_TYPES = [
+    "daily_cash",                    # 日常现金, 不打算投权益
+    "weekly_unallocated_cash",       # 本周未分配但仍计划未来投向权益
+    "rebalance_equity_reserve",     # 再平衡卖出后暂存, 等待重新配置
+    "qdii_pending_cash_sp500",      # 标普500 QDII溢价暂缓买入的钱
+    "qdii_pending_cash_nasdaq",     # 纳斯达克 QDII溢价暂缓买入的钱
+    "manual_cash",                   # 用户手动指定不参与本系统
+]
+
 # Default rules
 DEFAULT_RULES = [
     {
@@ -94,16 +127,8 @@ DEFAULT_RULES = [
         "applicableCodes": ["513500", "513300"],
         "isEnabled": True,
     },
-    {
-        "id": "veto_high_pe_percentile",
-        "name": "估值极高分位",
-        "type": "veto",
-        "thresholdValue": 80.0,
-        "thresholdValueMax": None,
-        "applicableScope": "all",
-        "applicableCodes": [],
-        "isEnabled": True,
-    },
+    # V4.2 策略书§5: PE/PB高估不再硬否决, 改为软风控4档
+    # 硬否决只保留: 黑名单 / 数据严重异常 / QDII溢价红线(当日>3%且3日均>2.5%) / 停牌
     {
         "id": "veto_blacklist",
         "name": "资产黑名单",
@@ -124,12 +149,47 @@ DEFAULT_RULES = [
         "applicableCodes": ["513500", "513300"],
         "isEnabled": True,
     },
+    # V4.2 策略书§5.2: 软风控4档(影响增强仓, 不影响基础仓)
+    # 第1档 60-80%: 增强仓减量×0.5 (沿用原 reduce 规则)
     {
         "id": "reduce_high_pe_percentile",
-        "name": "估值偏高分位",
+        "name": "估值偏高分位(60-80%)",
         "type": "reduce",
         "thresholdValue": 60.0,
         "thresholdValueMax": 80.0,
+        "applicableScope": "all",
+        "applicableCodes": [],
+        "isEnabled": True,
+    },
+    # 第2档 80-90%: 禁止增强仓, 仅允许基础仓 (新规则类型 soft_veto_enhancement)
+    {
+        "id": "soft_pe_high_80_90",
+        "name": "估值高估(80-90%禁增强仓)",
+        "type": "soft_veto_enhancement",
+        "thresholdValue": 80.0,
+        "thresholdValueMax": 90.0,
+        "applicableScope": "all",
+        "applicableCodes": [],
+        "isEnabled": True,
+    },
+    # 第3档 90-95%: 仅严重欠配时允许极小额基础仓
+    {
+        "id": "soft_pe_very_high_90_95",
+        "name": "估值极高(90-95%仅严重欠配极小额)",
+        "type": "soft_veto_enhancement",
+        "thresholdValue": 90.0,
+        "thresholdValueMax": 95.0,
+        "applicableScope": "all",
+        "applicableCodes": [],
+        "isEnabled": True,
+    },
+    # 第4档 >95%: 暂停新增(基础仓+增强仓都停), 除非策略手动允许
+    {
+        "id": "soft_pe_extreme_95",
+        "name": "估值极端(>95%暂停新增)",
+        "type": "soft_veto_all",
+        "thresholdValue": 95.0,
+        "thresholdValueMax": None,
         "applicableScope": "all",
         "applicableCodes": [],
         "isEnabled": True,
