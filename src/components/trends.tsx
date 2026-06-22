@@ -1946,6 +1946,17 @@ function MultiPeriodValuationPanel({
 
 // ─── V4.2 PRD§11: 极简宏观温度计面板 ───
 // 4个日频指标(中债/美债/USD-CNH/VIX), 只提示不改金额
+
+// V4.2 P4-B: 格式化宏观指标当前值的小数位
+// 债券收益率/汇率保留4位, VIX保留2位
+function formatMacroValue(val: number, metricType: string): string {
+  if (metricType === 'vix') {
+    return val.toFixed(2);
+  }
+  // 债券收益率和汇率保留4位小数
+  return val.toFixed(4);
+}
+
 function formatMacroChange(val: number | null, metricType: string): string {
   if (val === null) return '—';
   // 债券收益率用 bp, 汇率/VIX 用 %
@@ -2090,7 +2101,7 @@ function MacroThermometerPanel() {
                   </td>
                   <td className="text-right py-2 font-mono">
                     {it.current_value !== null
-                      ? `${it.current_value}${it.unit}`
+                      ? `${formatMacroValue(it.current_value, it.metric_type)}${it.unit}`
                       : '—'}
                   </td>
                   <td className={`text-right py-2 font-mono ${formatMacroChangeColor(it.weekly_change)}`}>
@@ -2975,13 +2986,8 @@ export default function TrendsTab() {
         <MacroThermometerPanel />
       </section>
 
-      {/* 0. 宏观监控（大盘指数 + 汇率合并） */}
-      <section>
-        <MacroMonitorPanel
-          indices={marketIndexQuery.data || []}
-          isLoading={marketIndexQuery.isLoading}
-        />
-      </section>
+      {/* V4.2 P4-C: 移除 MacroMonitorPanel(大盘指数+汇率), 与极简宏观温度计功能重复,
+          且大盘指数非 PRD/策略书要求(文档范围外增强) */}
 
       {/* 0b. 6-ETF 监控指标汇总（移到顶部，方便快速纵览全局） */}
       <section>

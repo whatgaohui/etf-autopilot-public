@@ -197,11 +197,20 @@ async def fetch_us_10y_treasury_yield() -> Optional[float]:
 
 
 async def fetch_usd_cnh() -> Optional[float]:
-    """USD/CNH 离岸人民币汇率。拉取近30天历史。
-    主源 akshare fx_spot_quote, 备源 currency_boc_sina(美元)。
+    """USD/CNH 离岸人民币汇率。拉取30天历史。
+    V4.2 P4-A: 主源改为 Yahoo Finance USDCNY=X (有最新历史), 
+    备源 akshare fx_spot_quote / currency_boc_sina。
     返回汇率(如7.15)。
     """
-    # 主源: fx_spot_quote (只返回当日现价, 无法取历史, 但仍是当日最新)
+    # 主源: Yahoo Finance USDCNY=X (V4.2 P4-A: 最稳定, 有30天历史)
+    try:
+        val = await _fetch_yahoo_quote("USDCNY=X", METRIC_USD_CNH, days=30)
+        if val is not None:
+            logger.info(f"[MACRO] usd_cnh from yahoo: {val}")
+            return val
+    except Exception as e:
+        logger.warning(f"[MACRO] usd_cnh yahoo primary failed: {e}")
+    # 备源1: akshare fx_spot_quote (只返回当日现价)
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.fx_spot_quote)
@@ -217,8 +226,8 @@ async def fetch_usd_cnh() -> Optional[float]:
                 _save_macro_metric(METRIC_USD_CNH, today, val, val, "akshare", "fx_spot_quote")
                 return val
     except Exception as e:
-        logger.warning(f"[MACRO] usd_cnh primary (fx_spot_quote) failed: {e}")
-    # 备源: currency_boc_sina(美元) 拉取历史30天
+        logger.warning(f"[MACRO] usd_cnh fx_spot_quote fallback failed: {e}")
+    # 备源2: currency_boc_sina(美元) 拉取历史
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.currency_boc_sina, symbol="美元")
@@ -236,14 +245,7 @@ async def fetch_usd_cnh() -> Optional[float]:
             if latest_val is not None:
                 return latest_val
     except Exception as e:
-        logger.warning(f"[MACRO] usd_cnh fallback (currency_boc_sina) failed: {e}")
-    # 兼源3: Yahoo Finance USDCNY=X (历史)
-    try:
-        val = await _fetch_yahoo_quote("USDCNY=X", METRIC_USD_CNH, days=30)
-        if val is not None:
-            return val
-    except Exception as e:
-        logger.warning(f"[MACRO] usd_cnh yahoo fallback failed: {e}")
+        logger.warning(f"[MACRO] usd_cnh currency_boc_sina fallback failed: {e}")
     return None
 
 
@@ -272,13 +274,13 @@ async def _fetch_yahoo_quote(symbol: str, metric_type: str, days: int = 30) -> O
 
 async def fetch_vix() -> Optional[float]:
     """VIX恐慌指数。akshare 1.18 已无 index_vix。
-    主源 Yahoo Finance ^VIX (拉取30天历史以支持周/月变化)。
+    主源 Yahoo Finance ^VIX (拉取60天历史以支持月变化计算)。
     备源 akshare stock_us_hist(^VIX)。
-    返回指数值(如18.5)。
+    返回指数值(如18.50, 保留2位小数)。
     """
-    # 主源: Yahoo Finance ^VIX (最稳定)
+    # 主源: Yahoo Finance ^VIX (V4.2 P4-B: 拉60天历史支持月变化)
     try:
-        val = await _fetch_yahoo_quote("%5EVIX", METRIC_VIX, days=30)
+        val = await _fetch_yahoo_quote("%5EVIX", METRIC_VIX, days=60)
         if val is not None:
             logger.info(f"[MACRO] vix from yahoo: {val}")
             return val
