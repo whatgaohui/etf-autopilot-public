@@ -605,16 +605,27 @@ def get_quality_logs(limit: int = 100, status: Optional[str] = None) -> list[dic
 
 
 def get_quality_conflicts(limit: int = 50) -> list[dict]:
-    """主备源冲突列表（quality_status=suspicious 或 unavailable 中 source 相关的）。"""
+    """主备源冲突列表。
+
+    精准匹配 reason 中含主备源冲突关键词的记录（由 _compute_consistency 生成），
+    避免误命中所有含"源"字的记录。同时限定 quality_status 为可疑/不可用，
+    排除已通过校验的记录。
+    """
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         try:
             _ensure_quality_result_table(conn)
-            # 找 reason 含"主备源"的记录
             rows = conn.execute(
                 """SELECT * FROM data_quality_result
-                   WHERE reason LIKE '%主备源%' OR reason LIKE '%源%'
+                   WHERE quality_status IN ('suspicious', 'unavailable')
+                     AND (
+                       reason LIKE '%主备源%'
+                       OR reason LIKE '%源不一致%'
+                       OR reason LIKE '%source_inconsistent%'
+                       OR reason LIKE '%source_conflict%'
+                       OR reason LIKE '%冲突%'
+                     )
                    ORDER BY created_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()

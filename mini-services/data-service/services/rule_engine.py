@@ -24,7 +24,6 @@ CRITICAL FIX vs v1:
     "当前占比30.4%高于目标18%，已超配，本周不补仓。"
 """
 import logging
-import math
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -38,6 +37,11 @@ from models.schemas import (
     RuleHit,
     SuggestionItem,
 )
+from services.data_clean_engine import clean_numeric
+
+# V4.1 S1-T7: 统一复用 data_clean_engine 的清洗逻辑（唯一来源），
+# 避免与 akshare_service / data_quality_score 的清洗逻辑漂移。
+safe_num = clean_numeric
 
 logger = logging.getLogger(__name__)
 
@@ -61,20 +65,6 @@ US_SHARE_REBALANCE_CODES = {"513500", "513300"}
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
-
-def safe_num(value) -> Optional[float]:
-    """Return None for None/NaN/Inf/sentinel values (abs >= 999999)."""
-    if value is None:
-        return None
-    try:
-        x = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(x) or math.isinf(x):
-        return None
-    if abs(x) >= 999999:
-        return None
-    return x
 
 
 def _check_staleness(code: str, md: dict) -> tuple[bool, str, str]:
