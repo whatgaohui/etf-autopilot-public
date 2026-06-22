@@ -1329,25 +1329,34 @@ def calculate_suggestions(
 
     # ──────────────────────────────────────────────
     # V4.2 Step 6: 构建两个池子
-    # base_pool: gap>0 且 非硬否决 (基础仓可投, 不受软风控限制)
-    # value_pool: gap>0 且 非硬否决 且 非pause_all (增强仓可投, 受软风控限制)
+    # V4.2 策略书§5.2: pause_all(>95%)暂停新增(基础仓+增强仓都停)
+    # base_pool: gap>0 且 非硬否决 且 非pause_all (基础仓可投)
+    # value_pool: gap>0 且 非硬否决 且 非pause_all 且 非forbid_enhancement/minimal_base (增强仓可投)
     # ──────────────────────────────────────────────
     base_pool = [
         c for c, it in per_item.items()
         if it["base_gap_amount"] > 0 and not it["vetoed"]
+        and it["soft_wind_control"] != "pause_all"
     ]
     value_pool = [
         c for c, it in per_item.items()
         if it["base_gap_amount"] > 0 and not it["vetoed"]
-        and it["soft_wind_control"] != "pause_all"
+        and it["soft_wind_control"] not in ("pause_all", "forbid_enhancement", "minimal_base")
     ]
 
     # ──────────────────────────────────────────────
     # V4.2 Step 7: 预算分桶 — 基础仓40% + 增强仓60%
+    # V4.2 策略书§8.2: QDII硬否决标的的预算配额先扣减, 进入挂起池, 不参与分配
     # ──────────────────────────────────────────────
-    base_budget = weekly_budget * BASE_BUCKET_RATIO
-    value_budget = weekly_budget * VALUE_BUCKET_RATIO
-    
+    qdii_blocked_budget = 0.0
+    for c in QDII_CODES:
+        if c in hard_vetoed_codes:
+            qdii_blocked_budget += weekly_budget * target_ratios.get(c, 0)
+
+    distributable_budget = max(0.0, weekly_budget - qdii_blocked_budget)
+    base_budget = distributable_budget * BASE_BUCKET_RATIO
+    value_budget = distributable_budget * VALUE_BUCKET_RATIO
+
     total_gap_base = sum(per_item[c]["base_gap_amount"] for c in base_pool)
     total_gap_value = sum(per_item[c]["base_gap_amount"] for c in value_pool)
 
@@ -1482,13 +1491,14 @@ def calculate_suggestions(
             else:
                 # 软风控场景: 启动基础定投仓投向最欠配+无硬否决标的
                 fallback_triggered = True
-                fallback_reason = "全部因软风控, 启动基础定投仓投向最欠配标的"
-                # 找最欠配(当前占比/目标占比 最低)且无硬否决的标的
+                # 找最欠配(当前占比/目标占比 最低)且无硬否决且非pause_all的标的
                 candidates = [
                     (c, it) for c, it in per_item.items()
                     if not it["vetoed"] and it["soft_wind_control"] != "pause_all"
+                    and it["base_gap_amount"] > 0
                 ]
                 if candidates:
+                    fallback_reason = "全部因软风控, 启动基础定投仓投向最欠配标的"
                     # 按欠配程度排序(当前占比/目标占比, 越小越欠配)
                     candidates.sort(key=lambda x: x[1]["current_ratio"] / max(x[1]["target_ratio"], 0.01))
                     best_code, best_it = candidates[0]
@@ -1502,6 +1512,9 @@ def calculate_suggestions(
                         actual_value=best_code, threshold="",
                         effect=f"基础仓¥{base_budget:.0f}")]
                     logger.info(f"[FALLBACK] 全否决兜底, 基础仓投向 {best_code}")
+                else:
+                    fallback_reason = "全部标的因软风控pause_all或硬否决无法买入, 预算进入weekly_unallocated_cash"
+                    logger.info(f"[FALLBACK] 无可投候选, 预算进入未分配现金")
 
     # ──────────────────────────────────────────────
     # Step 9: Gap cap — never buy more than the gap
@@ -1712,7 +1725,8 @@ def calculate_suggestions(
         ))
 
     total_allocated = sum(s.amount for s in suggestions)
-    total_unallocated = int(round(weekly_budget)) - total_allocated
+    # V4.2 策略书§8.2: 未分配 = 可分配预算 - 已分配(QDII挂起已从可分配预算扣减)
+    total_unallocated = int(round(distributable_budget)) - total_allocated
     if total_unallocated < 0:
         # Shouldn't happen, but safety guard
         total_unallocated = 0
@@ -1794,6 +1808,50 @@ def calculate_suggestions(
                     status="active",
                 ))
 
+    # V4.2 策略书§8.5: QDII连续4周阻断提示场外基金
+    qdii_consecutive_warnings: list[str] = []
+    try:
+        import sqlite3 as _sqlite3
+        from config import DB_PATH as _DB_PATH, QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD
+        _conn = _sqlite3.connect(_DB_PATH)
+        _conn.row_factory = _sqlite3.Row
+        for c in QDII_CODES:
+            if c in hard_vetoed_codes:
+                qdii_sub = "qdii_pending_cash_sp500" if c == "513500" else "qdii_pending_cash_nasdaq"
+                rows = _conn.execute(
+                    "SELECT created_at FROM cash_ledger WHERE cash_account_type=? AND source_event='qdii_blocked' AND source_etf=? ORDER BY created_at DESC LIMIT ?",
+                    (qdii_sub, c, QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD),
+                ).fetchall()
+                if len(rows) >= QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD:
+                    qdii_consecutive_warnings.append(
+                        f"{c}连续{QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD}周因QDII溢价被阻断, 建议人工评估是否使用场外联接基金/场外QDII方式承接对应额度。"
+                    )
+        _conn.close()
+    except Exception as _e:
+        logger.warning(f"[QDII-WARN] consecutive block check failed: {_e}")
+
+    # V4.2 策略书§8: 现金拖累提示
+    cash_drag_warning = ""
+    try:
+        total_assets = invested_asset_value + rebalance_equity_reserve + weekly_unallocated_cash + qdii_pending_cash_sp500 + qdii_pending_cash_nasdaq
+        # 加上华宝添益daily_cash和黄金(从holdings里找)
+        for h in holdings:
+            if h.code in ("511990", "518880"):
+                total_assets += float(h.market_value)
+        if total_assets > 0:
+            cash_pool_total = 0.0
+            for h in holdings:
+                if h.code == "511990":
+                    cash_pool_total += float(h.market_value)
+            cash_pool_total += rebalance_equity_reserve + weekly_unallocated_cash + qdii_pending_cash_sp500 + qdii_pending_cash_nasdaq
+            cash_ratio = cash_pool_total / total_assets
+            if cash_ratio > 0.30:
+                cash_drag_warning = f"现金水池占总资产{cash_ratio*100:.0f}%(>30%), 提醒可能存在长期现金拖累, 建议复核阈值或手动动用现金水池。"
+            elif cash_ratio > 0.20:
+                cash_drag_warning = f"现金水池占总资产{cash_ratio*100:.0f}%(>20%), 提醒现金占比偏高, 建议复核阈值。"
+    except Exception as _e:
+        logger.warning(f"[CASH-DRAG] calc failed: {_e}")
+
     # V4.2 策略书§8.4: QDII挂起池释放(溢价恢复正常时分批释放)
     for info in qdii_release_info:
         c = info["code"]
@@ -1872,6 +1930,9 @@ def calculate_suggestions(
             "totalGap": round(total_gap_value, 2) if total_gap_value > 0 else 0.0,
             "baseBudget": round(base_budget, 2),
             "valueBudget": round(value_budget, 2),
+            # V4.2 P3-D/P3-E: 风险提示
+            "qdiiConsecutiveWarnings": qdii_consecutive_warnings,
+            "cashDragWarning": cash_drag_warning,
         },
         totalBudget=int(round(weekly_budget)),
         totalAllocated=total_allocated,

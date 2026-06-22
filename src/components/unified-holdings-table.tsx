@@ -128,6 +128,63 @@ function getRuleName(r: RuleHit | string): string {
   return typeof r === 'string' ? r : r.ruleName;
 }
 
+// ─── V4.2 §4/§5: 桶类型 + 软风控展示辅助 ───────────────────────────────────
+
+function getBucketTypeLabel(t: string | undefined | null): string {
+  switch (t) {
+    case 'base_bucket':
+      return '基础仓';
+    case 'value_bucket':
+      return '增强仓';
+    case 'base+value':
+      return '基础+增强';
+    default:
+      return '—';
+  }
+}
+
+function getBucketTypeBadgeClass(t: string | undefined | null): string {
+  switch (t) {
+    case 'base_bucket':
+      return 'border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-400 bg-emerald-100/60 dark:bg-emerald-900/40';
+    case 'value_bucket':
+      return 'border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 bg-amber-100/60 dark:bg-amber-900/40';
+    case 'base+value':
+      return 'border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-400 bg-violet-100/60 dark:bg-violet-900/40';
+    default:
+      return 'border-border text-muted-foreground bg-muted/40 dark:bg-muted/20';
+  }
+}
+
+function getSoftWindControlLabel(t: string | undefined | null): string {
+  switch (t) {
+    case 'reduce':
+      return '减量';
+    case 'forbid_enhancement':
+      return '禁增强';
+    case 'minimal_base':
+      return '仅基础';
+    case 'pause_all':
+      return '暂停';
+    default:
+      return '—';
+  }
+}
+
+function getSoftWindControlBadgeClass(t: string | undefined | null): string {
+  switch (t) {
+    case 'reduce':
+      return 'border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 bg-amber-100/60 dark:bg-amber-900/40';
+    case 'forbid_enhancement':
+    case 'minimal_base':
+      return 'border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-400 bg-orange-100/60 dark:bg-orange-900/40';
+    case 'pause_all':
+      return 'border-red-300 dark:border-red-700 text-red-700 dark:text-red-400 bg-red-100/60 dark:bg-red-900/40';
+    default:
+      return 'border-border text-muted-foreground bg-muted/40 dark:bg-muted/20';
+  }
+}
+
 function formatYuan(v: number | null | undefined, decimals = 0): string {
   if (v === null || v === undefined) return '—';
   return `¥${v.toLocaleString('zh-CN', {
@@ -676,6 +733,9 @@ function buildRow(
     adviceLogic: adviceItem?.logic ?? '',
     adviceMultiplier: adviceItem?.multiplier ?? null,
     adviceReasonSummary: adviceItem?.reasonSummary ?? '',
+    // V4.2 §4/§5: 桶类型 + 软风控
+    adviceBucketType: adviceItem?.bucketType ?? 'none',
+    adviceSoftWindControl: adviceItem?.softWindControl ?? 'none',
   };
 }
 
@@ -1026,7 +1086,7 @@ export function UnifiedHoldingsTable({
 
           {/* The unified table - horizontally scrollable on small screens */}
           <div className="overflow-x-auto">
-            <Table className="min-w-[1000px]">
+            <Table className="min-w-[1140px]">
               <TableHeader>
                 <TableRow className="bg-muted/40 dark:bg-muted/20 hover:bg-muted/40 dark:hover:bg-muted/20 border-b border-border/60">
                   <TableHead className="w-[40px] text-center text-[11px] font-medium text-muted-foreground uppercase tracking-wide">展开</TableHead>
@@ -1039,6 +1099,8 @@ export function UnifiedHoldingsTable({
                   <TableHead className="text-center w-[75px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">溢价率/7日均</TableHead>
                   <TableHead className="text-center w-[55px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">股息率</TableHead>
                   <TableHead className="text-center w-[65px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">配置状态</TableHead>
+                  <TableHead className="text-center w-[70px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">资金桶</TableHead>
+                  <TableHead className="text-center w-[70px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">软风控</TableHead>
                   <TableHead className="text-right w-[100px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">本周建议</TableHead>
                   <TableHead className="w-[280px] max-w-[320px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">买入逻辑</TableHead>
                 </TableRow>
@@ -1192,6 +1254,34 @@ export function UnifiedHoldingsTable({
                         <TableCell className="text-center">
                           {getStatusBadge(row.status, row.statusText)}
                         </TableCell>
+                        {/* V4.2 §4 资金桶: base_bucket / value_bucket / base+value / none */}
+                        <TableCell className="text-center">
+                          {row.isInvestment && row.adviceBucketType && row.adviceBucketType !== 'none' ? (
+                            <Badge
+                              variant="outline"
+                              className={`text-[10px] px-1.5 py-0 rounded-full font-mono ${getBucketTypeBadgeClass(row.adviceBucketType)}`}
+                              title={`V4.2 资金桶: ${getBucketTypeLabel(row.adviceBucketType)}`}
+                            >
+                              {getBucketTypeLabel(row.adviceBucketType)}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        {/* V4.2 §5 软风控: none / reduce / forbid_enhancement / minimal_base / pause_all */}
+                        <TableCell className="text-center">
+                          {row.isInvestment && row.adviceSoftWindControl && row.adviceSoftWindControl !== 'none' ? (
+                            <Badge
+                              variant="outline"
+                              className={`text-[10px] px-1.5 py-0 rounded-full font-mono ${getSoftWindControlBadgeClass(row.adviceSoftWindControl)}`}
+                              title={`V4.2 软风控: ${getSoftWindControlLabel(row.adviceSoftWindControl)}`}
+                            >
+                              {getSoftWindControlLabel(row.adviceSoftWindControl)}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         {/* 本周建议金额 */}
                         <TableCell className="text-right">
                           {row.isInvestment && row.adviceAmount !== null ? (
@@ -1296,7 +1386,7 @@ export function UnifiedHoldingsTable({
                             transition={{ duration: 0.3, ease: EASE }}
                             className="bg-muted/10 dark:bg-muted/5"
                           >
-                            <TableCell colSpan={13} className="p-0">
+                            <TableCell colSpan={15} className="p-0">
                               <CalculationDetailPanel
                                 row={row}
                                 advice={advice}

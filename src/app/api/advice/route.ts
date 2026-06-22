@@ -514,6 +514,9 @@ ${macroSummary}
         rulesHit,
         preCapAmount,
         reasonSummary,
+        // V4.2 策略书§4/§5: 桶类型 + 软风控级别(透传规则引擎结果)
+        bucketType: (s.bucketType as string) ?? 'none',
+        softWindControl: (s.softWindControl as string) ?? 'none',
       };
 
       // Find LLM-generated logic for this code

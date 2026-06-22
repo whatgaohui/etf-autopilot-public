@@ -13,6 +13,7 @@ import { WeeklyConclusionCard } from '@/components/weekly-conclusion-card';
 import { RedLineAuditCard } from '@/components/red-line-audit-card';
 import { HistoryLogCard } from '@/components/history-log-card';
 import { DataTrustCard } from '@/components/data-trust-card';
+import { CashSubaccountFlowCard } from '@/components/cash-subaccount-flow-card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
@@ -389,6 +390,9 @@ export function Overview() {
           <RedLineAuditCard advice={advice} />
         </FadeInUp>
       )}
+
+      {/* V4.2 §9 现金子账户流向卡 — 结论卡下方、持仓明细表上方,仅 advice 存在时渲染 */}
+      {hasHoldings && advice && <CashSubaccountFlowCard advice={advice} />}
 
       {/* Section 3: Unified Holdings + Monitoring + Advice Table */}
       {hasHoldings && (

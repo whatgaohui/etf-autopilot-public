@@ -178,6 +178,10 @@ async def recompute_quality_scores():
     suspicious = sum(1 for s in quality_scores if s["quality_status"] == "suspicious")
     unavailable = sum(1 for s in quality_scores if s["quality_status"] == "unavailable")
     avg_score = round(sum(s["quality_score"] for s in quality_scores) / total, 1) if total > 0 else 0
+    # V4.2 P3-C: 补 allow_buy/allow_rebalance 字段(与 /summary 端点一致)
+    can_rule_count = sum(1 for s in quality_scores if s.get("can_use_for_rule"))
+    can_strong_count = sum(1 for s in quality_scores if s.get("can_use_for_strong_rule"))
+    overall_status = "excellent" if excellent == total else ("usable" if usable + excellent == total else ("suspicious" if suspicious > 0 else "unavailable")) if total > 0 else "unavailable"
 
     return {
         "success": True,
@@ -187,6 +191,11 @@ async def recompute_quality_scores():
         "suspicious": suspicious,
         "unavailable": unavailable,
         "avg_score": avg_score,
+        "can_use_for_rule_count": can_rule_count,
+        "can_use_for_strong_rule_count": can_strong_count,
+        "overall_status": overall_status,
+        "allow_buy_suggestion": can_rule_count > 0,
+        "allow_rebalance_suggestion": can_strong_count > 0,
         "items": quality_scores,
     }
 

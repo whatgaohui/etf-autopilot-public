@@ -284,6 +284,9 @@ export interface AdviceSuggestion {
   preCapAmount: number;
   reasonSummary: string;
   logic?: string;
+  // V4.2 策略书§4/§5: 桶类型 + 软风控级别
+  bucketType?: string; // base_bucket | value_bucket | base+value | none
+  softWindControl?: string; // none | reduce | forbid_enhancement | minimal_base | pause_all
 }
 
 export interface AdviceResponse {
@@ -313,6 +316,23 @@ export interface AdviceResponse {
   aiCheckSummary?: { passed: number; replaced: number; total: number };
   macroSummary?: string;
   generatedAt: string;
+  // V4.2 动态资金流修正字段(策略书§4-§9)
+  equityAllocationBase?: number;       // 权益配置基准(含挂起资金)
+  baseBucketAmount?: number;           // 基础定投仓金额(40%)
+  valueBucketAmount?: number;          // 估值增强仓金额(60%)
+  rebalanceEquityReserve?: number;     // 再平衡权益备用金余额
+  weeklyUnallocatedCash?: number;      // 本周未分配权益现金
+  qdiiPendingCashSp500?: number;       // 标普500挂起资金余额
+  qdiiPendingCashNasdaq?: number;      // 纳斯达克挂起资金余额
+  fallbackTriggered?: boolean;         // 是否触发全否决兜底
+  fallbackReason?: string;             // 兜底原因说明
+  cashMovements?: Array<{              // 现金台账条目
+    cashAccountType: string;
+    sourceEvent: string;
+    sourceEtf?: string;
+    amount: number;
+    status: string;
+  }>;
 }
 
 // ─── V4: Rebalance Suggestion (strategy doc §7) ───
@@ -338,13 +358,16 @@ export interface RebalanceSuggestion {
   rulesHit: RuleHit[];
 }
 
-// ─── V4: Cash Pool Suggestion (strategy doc §8) ───
+// ─── V4: Cash Pool Suggestion (strategy doc §8 / V4.2 §9 现金子账户) ───
 export interface CashPoolSuggestion {
   code: string;
   name: string;
-  inflowType: 'unallocated' | 'rebalance_release';
+  inflowType: 'unallocated' | 'rebalance_release' | 'qdii_blocked';
   inflowAmount: number;
   description: string;
+  // V4.2 §9 现金子账户路由
+  subaccountType?: string;       // weekly_unallocated_cash | rebalance_equity_reserve | qdii_pending_cash_sp500 | qdii_pending_cash_nasdaq | ...
+  countsAsEquityBase?: boolean;  // 是否计入权益配置基准
 }
 
 export interface HoldingsResponse {

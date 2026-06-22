@@ -4,7 +4,8 @@ import React from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Sparkles, ArrowRight, CheckCircle2, Ban, TrendingUp, Wallet, ArrowDownToLine, Repeat, ShieldCheck } from 'lucide-react';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { Sparkles, ArrowRight, CheckCircle2, Ban, TrendingUp, Wallet, ArrowDownToLine, Repeat, ShieldCheck, AlertTriangle, PiggyBank, Layers, Hourglass } from 'lucide-react';
 import type { AdviceResponse, AdviceSuggestion, RebalanceSuggestion } from '@/lib/types';
 import { FadeInUp, staggerContainer, StaggerItem, motion } from '@/lib/motion';
 
@@ -148,6 +149,24 @@ export function WeeklyConclusionCard({
   const dataTime = advice.dataSnapshot?.marketDataCacheTime || advice.calculatedAt || '';
   // V4.1 S4-T3: 从 dataQualitySummary 聚合数据质量得分
   const qualityScore = extractQualityScore(advice);
+  // V4.2 资金流字段(策略书§4-§9)
+  const equityAllocationBase = advice.equityAllocationBase;
+  const baseBucketAmount = advice.baseBucketAmount;
+  const valueBucketAmount = advice.valueBucketAmount;
+  const rebalanceEquityReserve = advice.rebalanceEquityReserve;
+  const weeklyUnallocatedCash = advice.weeklyUnallocatedCash;
+  const qdiiPendingCashSp500 = advice.qdiiPendingCashSp500;
+  const qdiiPendingCashNasdaq = advice.qdiiPendingCashNasdaq;
+  const fallbackTriggered = advice.fallbackTriggered === true;
+  const fallbackReason = advice.fallbackReason || '';
+  // 是否展示 V4.2 资金流区块(至少一个字段有值)
+  const hasV42Flow =
+    equityAllocationBase !== undefined ||
+    baseBucketAmount !== undefined ||
+    valueBucketAmount !== undefined ||
+    weeklyUnallocatedCash !== undefined ||
+    qdiiPendingCashSp500 !== undefined ||
+    qdiiPendingCashNasdaq !== undefined;
 
   // V4 策略书§8: 现金占比提示（华宝添益占总资产比例）
   const allSuggestions = advice.suggestions || [];
@@ -237,6 +256,96 @@ export function WeeklyConclusionCard({
               </div>
             </StaggerItem>
           </motion.div>
+
+        {/* V4.2 资金流区块(策略书§4-§9): 权益配置基准 / 基础仓+增强仓分桶 / QDII挂起 / 未分配资金 */}
+        {hasV42Flow && (
+          <div className="rounded-lg border border-violet-200/70 dark:border-violet-800/40 bg-violet-50/40 dark:bg-violet-950/20 px-3 py-2.5 space-y-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-violet-700 dark:text-violet-300">
+              <Layers className="h-3.5 w-3.5" />
+              <span>V4.2 资金流</span>
+              <Badge variant="outline" className="text-[9px] px-1.5 py-0 rounded-full font-mono text-violet-600 dark:text-violet-400 border-violet-300/70 dark:border-violet-700/50 bg-violet-100/40 dark:bg-violet-900/30">
+                分桶 + 子账户
+              </Badge>
+            </div>
+
+            {/* Row 1: 权益配置基准 + 基础仓 + 增强仓 */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+              <div className="flex items-center gap-1.5 rounded-md bg-background/60 dark:bg-background/30 border border-violet-200/50 dark:border-violet-800/30 px-2 py-1.5">
+                <TrendingUp className="h-3 w-3 text-violet-600 dark:text-violet-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] text-muted-foreground leading-tight">权益配置基准<span className="text-violet-600/70 dark:text-violet-400/70">（含挂起资金）</span></div>
+                  <div className="font-mono font-bold text-violet-700 dark:text-violet-300 leading-tight">
+                    {equityAllocationBase !== undefined ? formatYuan(equityAllocationBase) : '—'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-md bg-background/60 dark:bg-background/30 border border-violet-200/50 dark:border-violet-800/30 px-2 py-1.5">
+                <PiggyBank className="h-3 w-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] text-muted-foreground leading-tight">基础定投仓<span className="text-muted-foreground/70">（40%）</span></div>
+                  <div className="font-mono font-bold text-emerald-700 dark:text-emerald-400 leading-tight">
+                    {baseBucketAmount !== undefined ? formatYuan(baseBucketAmount) : '—'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-md bg-background/60 dark:bg-background/30 border border-violet-200/50 dark:border-violet-800/30 px-2 py-1.5">
+                <Sparkles className="h-3 w-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] text-muted-foreground leading-tight">估值增强仓<span className="text-muted-foreground/70">（60%）</span></div>
+                  <div className="font-mono font-bold text-amber-700 dark:text-amber-400 leading-tight">
+                    {valueBucketAmount !== undefined ? formatYuan(valueBucketAmount) : '—'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Row 2: QDII挂起 + 未分配资金 + 再平衡备用金 */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+              <div className="flex items-center gap-1.5 rounded-md bg-background/60 dark:bg-background/30 border border-red-200/50 dark:border-red-800/30 px-2 py-1.5">
+                <Hourglass className="h-3 w-3 text-red-600 dark:text-red-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] text-muted-foreground leading-tight">QDII挂起资金</div>
+                  <div className="font-mono font-bold text-red-700 dark:text-red-400 leading-tight text-[11px]">
+                    {qdiiPendingCashSp500 !== undefined || qdiiPendingCashNasdaq !== undefined
+                      ? `标普 ${qdiiPendingCashSp500 !== undefined ? formatYuan(qdiiPendingCashSp500) : '—'} · 纳斯达克 ${qdiiPendingCashNasdaq !== undefined ? formatYuan(qdiiPendingCashNasdaq) : '—'}`
+                      : '—'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-md bg-background/60 dark:bg-background/30 border border-amber-200/50 dark:border-amber-800/30 px-2 py-1.5">
+                <Wallet className="h-3 w-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] text-muted-foreground leading-tight">未分配资金<span className="text-muted-foreground/70"> → 待投权益现金</span></div>
+                  <div className="font-mono font-bold text-amber-700 dark:text-amber-400 leading-tight">
+                    {weeklyUnallocatedCash !== undefined ? formatYuan(weeklyUnallocatedCash) : (totalUnallocated ? formatYuan(totalUnallocated) : '—')}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-md bg-background/60 dark:bg-background/30 border border-orange-200/50 dark:border-orange-800/30 px-2 py-1.5">
+                <Repeat className="h-3 w-3 text-orange-600 dark:text-orange-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] text-muted-foreground leading-tight">再平衡权益备用金</div>
+                  <div className="font-mono font-bold text-orange-700 dark:text-orange-400 leading-tight">
+                    {rebalanceEquityReserve !== undefined ? formatYuan(rebalanceEquityReserve) : '—'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* V4.2 §6.5 全否决兜底提示 */}
+        {fallbackTriggered && (
+          <Alert className="border-amber-300 dark:border-amber-800/60 bg-amber-50/80 dark:bg-amber-950/30">
+            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+            <AlertTitle className="text-amber-800 dark:text-amber-300 font-semibold text-xs">
+              全否决兜底已触发
+            </AlertTitle>
+            <AlertDescription className="text-amber-800/90 dark:text-amber-300/80 text-xs leading-relaxed">
+              {fallbackReason || '本周所有定投标的均触发硬否决或软风控，预算已按 V4.2 §6.5 兜底规则路由至对应现金子账户，请人工复核。'}
+            </AlertDescription>
+          </Alert>
+        )}
 
         {/* 华宝添益资金流向汇总 (V4 §8 现金水池) */}
         {cashPoolInflow > 0 && (
