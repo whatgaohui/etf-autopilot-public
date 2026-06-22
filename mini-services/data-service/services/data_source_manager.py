@@ -64,6 +64,18 @@ DEFAULT_FIELD_CONFIG: dict[str, dict[str, list[str]]] = {
     "nav":       {"primary": ["akshare"], "backup": ["efinance", "tushare"]},
     "dividend":  {"primary": ["akshare"], "backup": ["tushare", "efinance"]},
     "price":     {"primary": ["akshare"], "backup": ["efinance", "tushare"]},
+    # V4.2 PRD§11.8: 宏观温度计作为独立 metric_type 纳入数据源管理
+    # 4个执行层宏观指标: 中债10Y / 美债10Y / USD-CNH / VIX
+    # 主源 akshare, 备源为空 (akshare 内已有多端点兜底, 见 macro_service.py)
+    # sub_metrics 字段为元信息, 不参与 _init_data_source_capability 的主备源派生逻辑
+    # (4个 sub_metric 在 _init_data_source_capability 中单独 INSERT 为 capability 记录)
+    "macro":     {
+        "primary": ["akshare"],
+        "backup": [],
+        "field_label": "宏观温度计",
+        "description": "V4.2 PRD§11 宏观温度计4指标: 中债/美债/USD-CNH/VIX",
+        "sub_metrics": ["cn_10y_bond_yield", "us_10y_treasury_yield", "usd_cnh", "vix"],
+    },
 }
 
 # 适配器元信息（用于前端展示）
@@ -911,7 +923,9 @@ class DataSourceManager:
         result = []
         for field, cfg in self._field_config.items():
             forced = cfg.get("forced")
-            result.append({
+            # V4.2 PRD§11.8: 暴露 macro 字段的 description / sub_metrics 元信息
+            default_cfg = DEFAULT_FIELD_CONFIG.get(field, {})
+            item = {
                 "field": field,
                 "field_label": _field_label(field),
                 "primary_sources": cfg["primary"],
@@ -920,7 +934,12 @@ class DataSourceManager:
                 "available_adapters": list(self._adapters.keys()),
                 "adapter_status": {name: {"available": adj.is_available(), **ADAPTER_METADATA.get(name, {})}
                                    for name, adj in self._adapters.items()},
-            })
+            }
+            if "description" in default_cfg:
+                item["description"] = default_cfg["description"]
+            if "sub_metrics" in default_cfg:
+                item["sub_metrics"] = default_cfg["sub_metrics"]
+            result.append(item)
         return result
 
     def update_field_config(self, field: str, primary: list[str], backup: list[str]) -> bool:
@@ -1450,6 +1469,8 @@ def _field_label(field: str) -> str:
         "nav": "基金净值",
         "dividend": "股息率",
         "price": "ETF 行情价",
+        # V4.2 PRD§11.8: 宏观温度计
+        "macro": "宏观温度计",
     }.get(field, field)
 
 
@@ -1674,8 +1695,21 @@ def _init_data_source_capability() -> None:
                        ON CONFLICT(source_id, metric_type) DO UPDATE SET is_validator = 1""",
                     (metric_type, now),
                 )
+            # V4.2 PRD§11.8: 宏观指标 capability
+            # 4个执行层宏观指标以单独 metric_type 注册, 主源 akshare (asset_scope='macro')
+            # 这样前端数据源管理页能展示每个宏观指标的源角色, 与 valuation/premium 等同治理
+            macro_metrics = ["cn_10y_bond_yield", "us_10y_treasury_yield", "usd_cnh", "vix"]
+            for metric in macro_metrics:
+                conn.execute(
+                    """INSERT INTO data_source_capability
+                       (source_id, metric_type, is_primary, is_backup, is_validator, asset_scope, notes, created_at)
+                       VALUES ('akshare', ?, 1, 0, 0, 'macro', 'V4.2 PRD§11.8 macro thermometer primary source', ?)
+                       ON CONFLICT(source_id, metric_type) DO UPDATE SET
+                         is_primary = 1, asset_scope = 'macro'""",
+                    (metric, now),
+                )
             conn.commit()
-            logger.info("[DS-MGR] data_source_capability initialized/updated")
+            logger.info("[DS-MGR] data_source_capability initialized/updated (V4.2: +macro metrics)")
         finally:
             conn.close()
     except Exception as e:

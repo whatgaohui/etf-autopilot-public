@@ -105,6 +105,21 @@ QDII_PREMIUM_HARD_VETO_3D_AVG = 2.5  # 3日均值确认线
 # V4.2 策略书§8.5: 连续N周溢价阻断则提示场外基金
 QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD = 4
 
+# V4.2 策略书§6.4: 指标方向防呆映射
+# higher_is_expensive: 越高越贵 (PE/PB/溢价 — 高于阈值代表偏贵, 应减仓/否决)
+# higher_is_cheaper:   越高越便宜 (股息率/股息率利差 — 低于阈值代表偏贵, 应减仓)
+# 规则引擎 reduce/boost 检查必须按方向正确判断"贵/便宜", 防止股息率逻辑写反
+METRIC_DIRECTION: dict[str, str] = {
+    "pe_percentile":               "higher_is_expensive",
+    "pb_percentile":               "higher_is_expensive",
+    "premium_today":               "higher_is_expensive",
+    "premium_7d_avg":              "higher_is_expensive",
+    "premium_3d_avg":              "higher_is_expensive",
+    "dividend_yield":              "higher_is_cheaper",
+    "dividend_yield_percentile":   "higher_is_cheaper",
+    "dividend_bond_spread":        "higher_is_cheaper",
+}
+
 # V4.2 策略书§3.1: 华宝添益现金子账户类型
 CASH_SUBACCOUNT_TYPES = [
     "daily_cash",                    # 日常现金, 不打算投权益

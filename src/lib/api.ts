@@ -546,3 +546,99 @@ export async function updateThreshold(key: string, maxDiff: number): Promise<Thr
     body: JSON.stringify({ key, max_diff: maxDiff }),
   });
 }
+
+// ─── V4.2 PRD§11 宏观温度计 ───────────────────────────────────────────────────
+
+export interface MacroMetricItem {
+  metric_type: string;
+  name: string;
+  current_value: number | null;
+  unit: string;
+  weekly_change: number | null;
+  monthly_change: number | null;
+  trade_date: string | null;
+  source: string | null;
+  quality_status: string;
+  affects: string;
+  updated_at: string | null;
+}
+
+export interface MacroTemperatureResponse {
+  items: MacroMetricItem[];
+  updated_at: string;
+}
+
+export interface MacroPrompt {
+  prompt_id: string;
+  metric_type: string;
+  metric_name: string;
+  trigger_type: string;
+  current_value: number;
+  weekly_change: number;
+  threshold: number;
+  severity: 'normal' | 'strong';
+  prompt_text: string;
+  affects: string;
+}
+
+export interface MacroPromptsResponse {
+  prompts: MacroPrompt[];
+  summary: string;
+  has_alert: boolean;
+}
+
+export interface MacroConfigItem {
+  id: string;
+  metric_type: string;
+  trigger_name: string;
+  threshold_value: number;
+  threshold_unit: string;
+  severity: string;
+  enabled: number;
+  display_text: string;
+  updated_at: string;
+}
+
+export async function getMacroTemperature(): Promise<MacroTemperatureResponse> {
+  return request<MacroTemperatureResponse>('/macro?type=temperature');
+}
+
+export async function getMacroPrompts(): Promise<MacroPromptsResponse> {
+  return request<MacroPromptsResponse>('/macro?type=prompts');
+}
+
+export async function getMacroHistory(
+  metricType: string,
+  days: number = 90
+): Promise<{
+  metric_type: string;
+  days: number;
+  history: Array<{ date: string; value: number | null; source: string }>;
+}> {
+  return request(
+    `/macro?type=history&metric_type=${encodeURIComponent(metricType)}&days=${days}`
+  );
+}
+
+export async function refreshMacro(): Promise<{
+  success: boolean;
+  message: string;
+  results: Record<string, number | null>;
+}> {
+  return request('/macro', { method: 'POST' });
+}
+
+export async function getMacroConfig(): Promise<{ configs: MacroConfigItem[] }> {
+  return request('/macro?type=config');
+}
+
+export async function updateMacroConfig(
+  id: string,
+  thresholdValue?: number,
+  enabled?: boolean
+): Promise<{ success: boolean }> {
+  return request('/macro', {
+    method: 'PUT',
+    body: JSON.stringify({ id, threshold_value: thresholdValue, enabled }),
+  });
+}

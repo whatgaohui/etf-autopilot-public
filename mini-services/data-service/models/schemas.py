@@ -395,6 +395,10 @@ class CachedDividend(BaseModel):
     dividend_yield: Optional[float] = Field(None, alias="dividendYield")
     dividend_yield_percentile: Optional[float] = Field(None, alias="dividendYieldPercentile")
     dividend_yield_history: list[DividendYieldHistoryPoint] = Field(default_factory=list, alias="dividendYieldHistory")
+    # V4.2 §6.4: 红利ETF股息率-国债利差 (dividend_yield - cn_10y_bond_yield)
+    dividend_bond_spread: Optional[float] = Field(None, alias="dividendBondSpread")
+    cn_10y_bond_yield: Optional[float] = Field(None, alias="cn10yBondYield")
+    dividend_bond_spread_percentile: Optional[float] = Field(None, alias="dividendBondSpreadPercentile")
     date: str = ""
 
     model_config = {"populate_by_name": True}
@@ -438,6 +442,10 @@ class CachedSummaryItem(BaseModel):
     premium_3d_avg: Optional[float] = Field(None, alias="premium3dAvg")
     nav: Optional[float] = None
     dividend_yield: Optional[float] = Field(None, alias="dividendYield")
+    # V4.2 §6.4: 红利ETF股息率-国债利差 (dividend_yield - cn_10y_bond_yield)
+    # 仅红利ETF(510880)有值; 其他ETF由前端忽略
+    dividend_bond_spread: Optional[float] = Field(None, alias="dividendBondSpread")
+    cn_10y_bond_yield: Optional[float] = Field(None, alias="cn10yBondYield")
     valuation_date: str = Field("", alias="valuationDate")
     premium_date: str = Field("", alias="premiumDate")
     nav_date: str = Field("", alias="navDate")

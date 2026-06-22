@@ -485,6 +485,48 @@ async def _fetch_lg_index_valuation(index_code: str, index_name: str, lg_name: s
     return result
 
 
+# V4.2 策略书§6.3: A500 代理估值级联优先级
+# A500 (159338 / 指数 000510) 历史不足 5 年时，按优先级尝试代理指数估值
+# 1) 中证800 (000852) — 与 A500 成分股重合度高，相关性最佳
+# 2) 中证全指 (000985) — 全市场宽基，覆盖面最广
+# 3) 沪深300 (000300) — 大盘蓝筹，与 A500 走势高度相关
+# 全部失败则不触发强估值规则，仅展示"样本不足"
+A500_PROXY_INDICES: list[tuple[str, str, str]] = [
+    ("000852", "中证800",   "中证800"),
+    ("000985", "中证全指", "中证全指"),
+    ("000300", "沪深300",   "沪深300"),
+]
+
+
+async def _fetch_a500_proxy_valuation() -> Optional[dict]:
+    """V4.2 策略书§6.3: A500 代理估值级联。
+
+    按优先级依次尝试: 中证800 → 中证全指 → 沪深300。
+    返回第一个成功拉取的代理估值 dict (含 pe/pb/pe_history/pb_history 等)，
+    并在结果上追加 `proxy_source` / `proxy_index_code` 字段标注代理来源。
+    所有代理指数均不可用时返回 None，调用方应据此跳过强估值规则。
+
+    拉取策略：优先使用乐咕乐股(_fetch_lg_index_valuation, 5+年历史)，失败回退中证指数官网。
+    """
+    for idx_code, idx_name, lg_name in A500_PROXY_INDICES:
+        try:
+            result = await _fetch_lg_index_valuation(idx_code, idx_name, lg_name)
+            if result and result.get("pe") is not None:
+                result["proxy_source"] = idx_name
+                result["proxy_index_code"] = idx_code
+                logger.info(
+                    f"[A500-PROXY] 使用 {idx_name}({idx_code}) 作为 A500 代理, "
+                    f"PE={result.get('pe')} PB={result.get('pb')} pe_pts={len(result.get('pe_history') or [])}"
+                )
+                return result
+            logger.warning(f"[A500-PROXY] {idx_name}({idx_code}) 拉取成功但 PE 为空, 尝试下一个代理")
+        except Exception as e:
+            logger.warning(f"[A500-PROXY] {idx_name}({idx_code}) 拉取失败: {e}")
+            continue
+    logger.warning("[A500-PROXY] 所有代理指数(中证800/中证全指/沪深300)均不可用, 不触发强估值规则")
+    return None
+
+
 async def _fetch_csindex_valuation(index_code: str, index_name: str) -> dict:
     """Fetch PE and PB from 中证指数官网.
 
@@ -493,12 +535,13 @@ async def _fetch_csindex_valuation(index_code: str, index_name: str) -> dict:
     注意：csindex akshare 接口（stock_zh_index_value_csindex）只返回最近 20 条数据，
           无法支撑 5Y/10Y 分位计算。
 
-    PE/PB Fallback 策略（V4.1 BUG-2026-06-A500-PB-PE）:
-        当 csindex 数据点 < 30 条时，用"沪深300 代理"补全 PE/PB 历史序列：
-        - 中证A500 (000510): 与沪深300 成分股重合度 ~70%，PE/PB 走势高度相关
-        - 科创50 (000688): 与沪深300 相关性较低，但仍优于 20 条数据点
-        - 比例缩放：用 csindex 当前 PE 值 / 沪深300 当前 PE 值 = 缩放系数，
-          将沪深300 PE 历史乘以系数得到 A500 PE 代理历史，保证当前值一致。
+    PE/PB Fallback 策略:
+        V4.1 BUG-2026-06-A500-PB-PE: 当 csindex 数据点 < 30 条时，用代理指数补全
+        PE/PB 历史序列。
+        V4.2 §6.3 升级为级联: 对中证A500 (000510) 按优先级尝试 中证800 → 中证全指
+        → 沪深300，第一个成功的代理指数作为参考。其他新指数(科创50等)仍沿用沪深300 单代理。
+        - 比例缩放：用 csindex 当前 PE 值 / 代理指数当前 PE 值 = 缩放系数，
+          将代理指数 PE 历史乘以系数得到目标指数 PE 代理历史，保证当前值一致。
         - 代理源会在返回 dict 中通过 `pe_source` / `pb_source` 字段标注，前端展示徽标。
     """
     try:
@@ -549,56 +592,75 @@ async def _fetch_csindex_valuation(index_code: str, index_name: str) -> dict:
 
     logger.info(f"[AKSHARE] csindex valuation for {index_code}: PE={current_pe} (pe_pts={len(pe_history)}), PB={current_pb} (pb_pts={len(pb_history)}, pb_col={pb_col})")
 
-    # ── PE/PB Fallback: csindex 数据点 < 30 时用沪深300 代理 ──
+    # ── PE/PB Fallback: csindex 数据点 < 30 时用代理指数补全 ──
     # 适用场景：中证A500(000510)/科创50(000688) 等新指数 csindex 只有 20 条历史
-    # 策略书§3.3: A500 样本不足时可用沪深300 辅助
-    # 比例缩放: 用 csindex 当前值 / 沪深300 当前值 作为缩放系数，保证当前值一致
+    # V4.2 §6.3: A500 (000510) 改为级联代理: 中证800 → 中证全指 → 沪深300
+    # 其他新指数(科创50等)仍沿用沪深300 单代理
+    # 比例缩放: 用 csindex 当前值 / 代理指数当前值 作为缩放系数，保证当前值一致
     needs_proxy = (len(pe_history) < 30 or (current_pb is None and not pb_history)) and index_code != "000300"
     if needs_proxy:
         try:
-            logger.info(f"[AKSHARE] PE/PB fallback: 用沪深300 代理 {index_code} ({index_name}) pe_pts={len(pe_history)}")
-            hs300_result = await _fetch_lg_index_valuation("000300", "沪深300", "沪深300")
-            hs300_pe = hs300_result.get("pe")
-            hs300_pb = hs300_result.get("pb")
-            hs300_pe_history = hs300_result.get("pe_history", [])
-            hs300_pb_history = hs300_result.get("pb_history", [])
+            # V4.2 §6.3: A500 用级联代理，其他指数沿用沪深300
+            if index_code == "000510":
+                logger.info(f"[AKSHARE] PE/PB fallback (A500 cascade): {index_code} ({index_name}) pe_pts={len(pe_history)}")
+                proxy_result = await _fetch_a500_proxy_valuation()
+                if proxy_result is None:
+                    # 所有代理均不可用，不触发强估值规则
+                    logger.warning(f"[AKSHARE] A500 代理级联全部失败, 保留 csindex 原始数据(样本不足), 不触发强估值规则")
+                    pe_multi = calculate_multi_period_percentiles(current_pe, pe_history, "value")
+                    pb_multi = calculate_multi_period_percentiles(current_pb, pb_history, "value")
+                    if current_pb is None:
+                        pb_source = "csindex(无PB,A500代理全失败)"
+                    if len(pe_history) < 30:
+                        pe_source = "csindex(数据不足,A500代理全失败)"
+                    proxy_result = {}  # 空 dict, 后续 .get() 调用安全返回 None
+                proxy_name = proxy_result.get("proxy_source", "沪深300")
+            else:
+                logger.info(f"[AKSHARE] PE/PB fallback (沪深300 proxy): {index_code} ({index_name}) pe_pts={len(pe_history)}")
+                proxy_result = await _fetch_lg_index_valuation("000300", "沪深300", "沪深300")
+                proxy_name = "沪深300"
+
+            proxy_pe = proxy_result.get("pe")
+            proxy_pb = proxy_result.get("pb")
+            proxy_pe_history = proxy_result.get("pe_history", [])
+            proxy_pb_history = proxy_result.get("pb_history", [])
 
             # PE 代理：用比例缩放让当前值与 csindex 一致
-            if len(pe_history) < 30 and current_pe is not None and hs300_pe is not None and hs300_pe > 0:
-                pe_scale = current_pe / hs300_pe
-                proxy_pe_history = [
+            if len(pe_history) < 30 and current_pe is not None and proxy_pe is not None and proxy_pe > 0:
+                pe_scale = current_pe / proxy_pe
+                proxy_pe_history_scaled = [
                     {"date": h["date"], "value": round(h["value"] * pe_scale, 4)}
-                    for h in hs300_pe_history
+                    for h in proxy_pe_history
                 ]
-                pe_history = proxy_pe_history
+                pe_history = proxy_pe_history_scaled
                 pe_vals = [h["value"] for h in pe_history]
                 pe_percentile = calculate_percentile(current_pe, pe_vals) if pe_vals else 0
-                pe_source = "沪深300代理"
-                logger.info(f"[AKSHARE] PE fallback 成功: {index_code} pe={current_pe} scale={pe_scale:.4f} (沪深300代理 {len(pe_history)}条)")
+                pe_source = f"{proxy_name}代理"
+                logger.info(f"[AKSHARE] PE fallback 成功: {index_code} pe={current_pe} scale={pe_scale:.4f} ({proxy_name}代理 {len(pe_history)}条)")
 
-            # PB 代理：直接用沪深300 PB 值（PB 数值差异 <5% 无需缩放）
-            if current_pb is None and hs300_pb is not None:
-                current_pb = hs300_pb
-                pb_history = hs300_pb_history
+            # PB 代理：直接用代理指数 PB 值（PB 数值差异 <5% 无需缩放）
+            if current_pb is None and proxy_pb is not None:
+                current_pb = proxy_pb
+                pb_history = proxy_pb_history
                 pb_vals = [h["value"] for h in pb_history]
-                pb_percentile = hs300_result.get("pb_percentile", 0)
-                pb_source = "沪深300代理"
-                logger.info(f"[AKSHARE] PB fallback 成功: {index_code} pb={current_pb} (沪深300代理 {len(pb_history)}条)")
+                pb_percentile = proxy_result.get("pb_percentile", 0)
+                pb_source = f"{proxy_name}代理"
+                logger.info(f"[AKSHARE] PB fallback 成功: {index_code} pb={current_pb} ({proxy_name}代理 {len(pb_history)}条)")
 
-            # 复用沪深300 多周期分位
-            if pe_source == "沪深300代理":
+            # 复用代理指数多周期分位
+            if pe_source == f"{proxy_name}代理":
                 # PE 用比例缩放后的历史重算多周期分位
                 pe_multi = calculate_multi_period_percentiles(current_pe, pe_history, "value")
             else:
                 pe_multi = calculate_multi_period_percentiles(current_pe, pe_history, "value")
 
-            if pb_source == "沪深300代理":
+            if pb_source == f"{proxy_name}代理":
                 pb_multi = {
-                    "1y": hs300_result.get("pb_percentile_1y"),
-                    "3y": hs300_result.get("pb_percentile_3y"),
-                    "5y": hs300_result.get("pb_percentile_5y"),
-                    "10y": hs300_result.get("pb_percentile_10y"),
-                    "all": hs300_result.get("pb_percentile_all"),
+                    "1y": proxy_result.get("pb_percentile_1y"),
+                    "3y": proxy_result.get("pb_percentile_3y"),
+                    "5y": proxy_result.get("pb_percentile_5y"),
+                    "10y": proxy_result.get("pb_percentile_10y"),
+                    "all": proxy_result.get("pb_percentile_all"),
                 }
             else:
                 pb_multi = calculate_multi_period_percentiles(current_pb, pb_history, "value")
@@ -1370,6 +1432,34 @@ async def fetch_dividend_yield(index_code: str = "000015") -> dict:
         "dividend_yield_history": clean_numeric_series(dividend_yield_history, "value"),
         "date": data_date,
     }
+
+    # V4.2 策略书§6.4: 红利ETF 股息率 - 中国10年国债收益率利差
+    # 从 macro_metric_cache 表读取最新 cn_10y_bond_yield, 计算 spread = dividend_yield - cn_10y_bond_yield
+    # 该利差代表"红利股息相对无风险利率的风险补偿", 越高越便宜(符合 higher_is_cheaper 方向)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT clean_value FROM macro_metric_cache "
+                "WHERE metric_type='cn_10y_bond_yield' ORDER BY trade_date DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        if row and row[0] is not None and result.get("dividend_yield") is not None:
+            cn_bond = float(row[0])
+            dy_val = float(result["dividend_yield"])
+            # 利差单位: 百分比(股息率4.5% - 国债2.0% = 2.5%利差)
+            result["dividend_bond_spread"] = round(dy_val - cn_bond, 4)
+            result["cn_10y_bond_yield"] = round(cn_bond, 4)
+            # 可选: 历史分位(若有历史股息率和国债收益率数据可算, 当前仅算当前值)
+            result["dividend_bond_spread_percentile"] = None
+            logger.info(
+                f"[DIVIDEND] dividend_bond_spread calc: dy={dy_val}% - cn_bond={cn_bond}% = {result['dividend_bond_spread']}%"
+            )
+        else:
+            logger.warning("[DIVIDEND] dividend_bond_spread calc skipped: cn_10y_bond_yield unavailable")
+    except Exception as e:
+        logger.warning(f"[DIVIDEND] dividend_bond_spread calc failed: {e}")
 
     _save_to_cache(index_code, "dividend", data_date, result)
     return result

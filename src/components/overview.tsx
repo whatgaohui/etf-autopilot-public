@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, Clock, AlertTriangle, Upload, FileEdit } from 'lucide-react';
+import { RefreshCw, Clock, AlertTriangle, AlertCircle, Upload, FileEdit } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { HoldingsUpload } from '@/components/holdings-upload';
@@ -27,6 +27,7 @@ import {
   refreshMarketData,
   generateAdvice,
   getQualitySummary,
+  getMacroPrompts,
 } from '@/lib/api';
 import type { OcrResult, AdviceResponse, CachedSummaryResponse } from '@/lib/types';
 
@@ -73,6 +74,13 @@ export function Overview() {
   const isDataBlocked =
     !!qualitySummary &&
     (qualitySummary.avg_score < 60 || !qualitySummary.allow_buy_suggestion);
+
+  // V4.2 PRD§11: 宏观温度计提示（仅异常时显示在可信度卡与结论卡之间）
+  const macroPromptsQuery = useQuery({
+    queryKey: ['macro-prompts'],
+    queryFn: getMacroPrompts,
+    staleTime: 5 * 60 * 1000,
+  });
 
   const hasHoldings = !!holdingsQuery.data?.holdings?.length;
   const holdings = holdingsQuery.data?.holdings || [];
@@ -304,6 +312,36 @@ export function Overview() {
         isError={qualitySummaryQuery.isError}
         onRefresh={() => qualitySummaryQuery.refetch()}
       />
+
+      {/* V4.2 PRD§11: 宏观温度计提示区 — 仅异常时显示, 在可信度卡与结论卡之间 */}
+      {macroPromptsQuery.data?.has_alert && macroPromptsQuery.data.prompts.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <Alert className="border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30">
+            <AlertCircle className="size-4 text-amber-600" />
+            <AlertTitle className="text-sm text-amber-800 dark:text-amber-300">宏观提示</AlertTitle>
+            <AlertDescription>
+              {macroPromptsQuery.data.prompts.map((p, i) => (
+                <div key={`${p.prompt_id}-${i}`} className="text-xs mt-1 text-amber-800 dark:text-amber-300">
+                  <span
+                    className={`inline-block px-1.5 py-0.5 rounded text-[10px] mr-1 ${
+                      p.severity === 'strong'
+                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                        : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                    }`}
+                  >
+                    {p.severity === 'strong' ? '强提示' : '提示'}
+                  </span>
+                  {p.prompt_text}
+                </div>
+              ))}
+            </AlertDescription>
+          </Alert>
+        </motion.div>
+      )}
 
       {/* V4 策略书§10.3: 持仓异常变化提示 */}
       {abnormalChanges.length > 0 && (

@@ -40,6 +40,7 @@ import {
   TrendingUp,
   TrendingDown,
   AlertTriangle,
+  AlertCircle,
   Activity,
   XCircle,
   ShieldAlert,
@@ -50,6 +51,8 @@ import {
   BarChart3,
   DollarSign,
   Globe,
+  RefreshCw,
+  Thermometer,
 } from 'lucide-react';
 import type {
   MarketDataSummary,
@@ -68,9 +71,15 @@ import { TrendLineagePopover } from '@/components/trend-lineage-popover';
 import {
   getFieldConfigs,
   getQualityByCode,
+  getMacroTemperature,
+  getMacroPrompts,
+  refreshMacro,
   type FieldSourceConfig,
   type QualityScoreItem,
+  type MacroMetricItem,
+  type MacroPrompt,
 } from '@/lib/api';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 
 // ─── Types ───
 
@@ -1935,6 +1944,183 @@ function MultiPeriodValuationPanel({
 }
 
 
+// ─── V4.2 PRD§11: 极简宏观温度计面板 ───
+// 4个日频指标(中债/美债/USD-CNH/VIX), 只提示不改金额
+function formatMacroChange(val: number | null, metricType: string): string {
+  if (val === null) return '—';
+  // 债券收益率用 bp, 汇率/VIX 用 %
+  if (metricType.includes('bond') || metricType.includes('treasury')) {
+    return `${val > 0 ? '+' : ''}${(val * 100).toFixed(1)}bp`;
+  }
+  return `${val > 0 ? '+' : ''}${val.toFixed(4)}`;
+}
+
+function formatMacroChangeColor(val: number | null): string {
+  if (val === null) return 'text-muted-foreground';
+  // 这些指标上行=不利=红色, 下行=有利=绿色
+  if (val > 0) return 'text-red-600 dark:text-red-400';
+  if (val < 0) return 'text-emerald-600 dark:text-emerald-400';
+  return 'text-muted-foreground';
+}
+
+function MacroQualityBadge({ status }: { status: string }) {
+  // 后端可能返回: excellent / usable / suspicious / unavailable / null
+  const map: Record<string, { label: string; cls: string }> = {
+    excellent: { label: '正常', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' },
+    usable: { label: '正常', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' },
+    suspicious: { label: '提示', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' },
+    unavailable: { label: '不可用', cls: 'bg-muted text-muted-foreground' },
+  };
+  const info = map[status] ?? { label: '不可用', cls: 'bg-muted text-muted-foreground' };
+  return (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${info.cls}`}>
+      {info.label}
+    </span>
+  );
+}
+
+function MacroThermometerPanel() {
+  const macroTempQuery = useQuery({
+    queryKey: ['macro-temperature'],
+    queryFn: getMacroTemperature,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const macroPromptsQuery = useQuery({
+    queryKey: ['macro-prompts'],
+    queryFn: getMacroPrompts,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      await refreshMacro();
+      macroTempQuery.refetch();
+      macroPromptsQuery.refetch();
+    } catch {
+      // 静默失败, 上游已有兜底
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [macroTempQuery, macroPromptsQuery]);
+
+  const items: MacroMetricItem[] = macroTempQuery.data?.items ?? [];
+  const prompts: MacroPrompt[] = macroPromptsQuery.data?.prompts ?? [];
+  const hasAlert = macroPromptsQuery.data?.has_alert ?? false;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="min-w-0">
+            <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
+              <Thermometer className="size-4 text-primary" />
+              极简宏观温度计
+            </CardTitle>
+            <CardDescription className="text-xs mt-0.5">
+              V4.2 · 只提示不改金额 · 4个日频指标
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="h-7 text-xs"
+          >
+            <RefreshCw className={`size-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+            {isRefreshing ? '刷新中' : '刷新宏观'}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {/* 宏观提示 Alert (仅异常时) */}
+        {hasAlert && prompts.length > 0 && (
+          <Alert className="mb-3 border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30">
+            <AlertCircle className="size-4 text-amber-600" />
+            <AlertTitle className="text-sm text-amber-800 dark:text-amber-300">宏观提示</AlertTitle>
+            <AlertDescription>
+              {prompts.map((p, i) => (
+                <div key={`${p.prompt_id}-${i}`} className="text-xs mt-1 text-amber-800 dark:text-amber-300">
+                  <span
+                    className={`inline-block px-1.5 py-0.5 rounded text-[10px] mr-1 ${
+                      p.severity === 'strong'
+                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                        : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                    }`}
+                  >
+                    {p.severity === 'strong' ? '强提示' : '提示'}
+                  </span>
+                  {p.prompt_text}
+                </div>
+              ))}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* 4指标表格 */}
+        <div className="overflow-x-auto max-h-72 overflow-y-auto">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-card">
+              <tr className="border-b">
+                <th className="text-left py-2 font-medium">指标</th>
+                <th className="text-right py-2 font-medium">当前值</th>
+                <th className="text-right py-2 font-medium">周变化</th>
+                <th className="text-right py-2 font-medium">月变化</th>
+                <th className="text-center py-2 font-medium">状态</th>
+                <th className="text-right py-2 font-medium">更新</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="text-center py-6 text-muted-foreground">
+                    暂无宏观指标数据,点击右上角"刷新宏观"获取
+                  </td>
+                </tr>
+              )}
+              {items.map((it) => (
+                <tr key={it.metric_type} className="border-b last:border-0">
+                  <td className="py-2">
+                    <div className="font-medium">{it.name}</div>
+                    <div className="text-[10px] text-muted-foreground">{it.affects}</div>
+                  </td>
+                  <td className="text-right py-2 font-mono">
+                    {it.current_value !== null
+                      ? `${it.current_value}${it.unit}`
+                      : '—'}
+                  </td>
+                  <td className={`text-right py-2 font-mono ${formatMacroChangeColor(it.weekly_change)}`}>
+                    {formatMacroChange(it.weekly_change, it.metric_type)}
+                  </td>
+                  <td className={`text-right py-2 font-mono ${formatMacroChangeColor(it.monthly_change)}`}>
+                    {formatMacroChange(it.monthly_change, it.metric_type)}
+                  </td>
+                  <td className="text-center py-2">
+                    <MacroQualityBadge status={it.quality_status} />
+                  </td>
+                  <td className="text-right py-2 text-muted-foreground whitespace-nowrap">
+                    {it.trade_date || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!hasAlert && items.length > 0 && (
+          <p className="text-xs text-muted-foreground mt-2">
+            宏观温度计：本周无明显宏观异常。
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+
 // ─── 宏观监控面板（大盘指数 + 汇率合并） ───
 function MacroMonitorPanel({ indices, isLoading }: { indices: MarketIndexData[]; isLoading: boolean }) {
   const { data: forex, isLoading: forexLoading } = useForex();
@@ -2784,6 +2970,11 @@ export default function TrendsTab() {
 
   return (
     <div className="flex flex-col gap-6 w-full">
+      {/* 0a. V4.2 PRD§11 极简宏观温度计 (顶部, 只提示不改金额) */}
+      <section>
+        <MacroThermometerPanel />
+      </section>
+
       {/* 0. 宏观监控（大盘指数 + 汇率合并） */}
       <section>
         <MacroMonitorPanel

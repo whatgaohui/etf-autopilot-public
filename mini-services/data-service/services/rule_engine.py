@@ -53,6 +53,7 @@ from config import (
     QDII_PREMIUM_HARD_VETO_3D_AVG,
     QDII_RELEASE_PLAN_WEEKS,
     QDII_RELEASE_CAP_MULTIPLIER,
+    METRIC_DIRECTION,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,26 @@ logger = logging.getLogger(__name__)
 # They appear in suggestions with amount=0 and a vetoed info hit so the user can see
 # they are excluded from weekly buying on purpose.
 DEFAULT_NON_INVESTABLE_HINT = {"518880", "511990"}
+
+
+def _is_metric_expensive(metric_name: str, value: float, threshold: float) -> bool:
+    """V4.2 §6.4: 按指标方向判断是否"贵"。
+
+    higher_is_expensive: value > threshold 视为偏贵 (PE/PB/溢价 等估值指标)
+    higher_is_cheaper:   value < threshold 视为偏贵 (股息率/股息率利差 等收益指标)
+
+    供规则引擎 reduce/boost 检查参考; 现有 _check_reduce_hits / _check_boost_hits
+    代码已正确处理两类方向, 本函数作为防呆辅助供未来扩展和回归测试使用。
+
+    Examples:
+      _is_metric_expensive("pe_percentile", 85, 80)             -> True  (PE分位85% > 80% 阈值, 偏贵)
+      _is_metric_expensive("dividend_yield", 3.0, 5.0)          -> True  (股息率3% < 5% 阈值, 偏贵)
+      _is_metric_expensive("dividend_bond_spread", 1.0, 2.5)    -> True  (利差1% < 2.5% 阈值, 偏贵)
+    """
+    direction = METRIC_DIRECTION.get(metric_name, "higher_is_expensive")
+    if direction == "higher_is_cheaper":
+        return value < threshold
+    return value > threshold
 
 # QDII overseas ETFs whose data quality requires premium_today (not pe_percentile)
 QDII_CODES = {"513500", "513300"}
@@ -606,7 +627,17 @@ def _check_reduce_hits(
     premium_today: Optional[float],
     rules: list,
 ) -> list[RuleHit]:
-    """Check reduce rules. Returns list of RuleHit objects."""
+    """Check reduce rules. Returns list of RuleHit objects.
+
+    V4.2 §6.4 metric_direction 防呆:
+      - PE分位 / QDII溢价率 / 持仓过度集中 都是 higher_is_expensive 方向
+        (值高于阈值 = 偏贵 → 应触发 reduce)
+      - 股息率 / 股息率利差 是 higher_is_cheaper 方向(值低于阈值 = 偏贵),
+        但当前 reduce 规则集里无股息率相关 reduce 规则(红利ETF用 _check_dividend_rebalance 单独处理),
+        因此本函数现有比较逻辑均为 value > threshold, 与方向一致, 无需修改。
+      - 未来若新增股息率 reduce 规则, 应使用 _is_metric_expensive() 辅助函数判断方向,
+        避免逻辑写反。
+    """
     hits: list[RuleHit] = []
 
     for rule in rules:
@@ -622,6 +653,7 @@ def _check_reduce_hits(
 
         if "qdii_premium" in rule.id.lower() or "溢价预警" in rule.name:
             # QDII premium in [threshold, threshold_max] (default 2~3)
+            # 方向: higher_is_expensive (溢价越高越贵, 进入[2%, 3%]区间触发 reduce)
             if (
                 premium_today is not None
                 and threshold is not None
@@ -638,6 +670,7 @@ def _check_reduce_hits(
                 ))
 
         elif "high_pe" in rule.id.lower() or "偏高" in rule.name:
+            # 方向: higher_is_expensive (PE分位越高越贵, 进入[60%, 80%]区间触发 reduce)
             if (
                 pe_percentile is not None
                 and threshold is not None
@@ -655,6 +688,7 @@ def _check_reduce_hits(
 
         elif "over_concentrated" in rule.id.lower() or "过度集中" in rule.name:
             # current_ratio > target_ratio * threshold (default 1.5)
+            # 方向: higher_is_expensive (持仓占比偏离目标越高越贵)
             if (
                 target_ratio > 0
                 and threshold is not None
@@ -681,7 +715,17 @@ def _check_boost_hits(
     pe_percentile: Optional[float],
     rules: list,
 ) -> list[RuleHit]:
-    """Check boost rules. Returns list of RuleHit objects."""
+    """Check boost rules. Returns list of RuleHit objects.
+
+    V4.2 §6.4 metric_direction 防呆:
+      - boost 是"加仓"信号, 触发条件与 reduce 相反
+      - PE极度低估 (PE分位<threshold) — PE方向是 higher_is_expensive,
+        低于阈值 = 偏便宜 → 触发 boost, 与现有 pe_percentile < threshold 一致
+      - 负偏离过大 (持仓占比 < target×threshold) — 偏离度方向 higher_is_expensive,
+        低于阈值 = 严重欠配 → 触发 boost
+      - 股息率类 boost 规则若未来新增, 应用 _is_metric_expensive() 判断:
+        股息率 > threshold = 便宜 → 应触发 boost (与 PE 反向)
+    """
     hits: list[RuleHit] = []
 
     for rule in rules:
@@ -695,6 +739,7 @@ def _check_boost_hits(
         threshold = rule.threshold_value
 
         if "very_low_pe" in rule.id.lower() or "极度低估" in rule.name:
+            # 方向: higher_is_expensive (PE分位越低越便宜, < 20% 触发 boost)
             if pe_percentile is not None and threshold is not None and pe_percentile < threshold:
                 hits.append(RuleHit(
                     ruleType="boost",
@@ -707,6 +752,7 @@ def _check_boost_hits(
 
         elif "large_negative_deviation" in rule.id.lower() or "负偏离" in rule.name:
             # current_ratio < target_ratio * threshold (default 0.5)
+            # 方向: higher_is_expensive (偏离度越低越欠配, < 目标×0.5 触发 boost)
             if (
                 target_ratio > 0
                 and threshold is not None

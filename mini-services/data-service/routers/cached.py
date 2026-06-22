@@ -358,6 +358,10 @@ async def get_cached_dividend():
                 dividendYield=data.get("dividend_yield"),
                 dividendYieldPercentile=data.get("dividend_yield_percentile"),
                 dividendYieldHistory=data.get("dividend_yield_history", []),
+                # V4.2 §6.4: 股息率-国债利差 (仅红利ETF有值)
+                dividendBondSpread=data.get("dividend_bond_spread"),
+                cn10yBondYield=data.get("cn_10y_bond_yield"),
+                dividendBondSpreadPercentile=data.get("dividend_bond_spread_percentile"),
                 date=item["date"],
             )
         )
@@ -457,6 +461,9 @@ async def get_cached_summary():
             premium_3d_avg=prem_3d_avg,
             nav=nav_d.get("nav"),
             dividend_yield=div_d.get("dividend_yield"),
+            # V4.2 §6.4: 红利ETF股息率-国债利差 (仅红利ETF有值, 其他ETF为 None)
+            dividend_bond_spread=div_d.get("dividend_bond_spread"),
+            cn_10y_bond_yield=div_d.get("cn_10y_bond_yield"),
             valuation_date=val.get("date", ""),
             premium_date=prem.get("date", ""),
             nav_date=nav.get("date", ""),
