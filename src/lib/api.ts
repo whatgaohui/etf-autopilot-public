@@ -129,9 +129,17 @@ export interface RefreshResponse {
 }
 
 export async function refreshMarketData(): Promise<RefreshResponse> {
-  return request<RefreshResponse>('/data', {
+  // V4.2 P4: 后端 refresh 可能要1-3分钟(6 ETF × 多指标 × 多源), 加200秒超时
+  const res = await fetch(`${BASE_URL}/data`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(200000),
   });
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({ error: '刷新失败' }));
+    throw new Error((errorBody as { error?: string }).error || `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<RefreshResponse>;
 }
 
 // Advice

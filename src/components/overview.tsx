@@ -161,16 +161,19 @@ export function Overview() {
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
+    toast.info('数据刷新中,可能需要1-3分钟(多源拉取),请耐心等待...');
     try {
       await refreshMarketData();
       toast.success('数据刷新成功');
       queryClient.invalidateQueries({ queryKey: ['marketData'] });
+      // V4.2: 同时刷新数据质量评分
+      qualitySummaryQuery.refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '刷新失败');
+      toast.error(err instanceof Error ? err.message : '刷新失败(可能超时,请稍后重试)');
     } finally {
       setIsRefreshing(false);
     }
-  }, [queryClient]);
+  }, [queryClient, qualitySummaryQuery]);
 
   const handleGenerateAdvice = useCallback(async () => {
     setIsGeneratingAdvice(true);

@@ -28,6 +28,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { toast } from 'sonner';
 import {
   Table,
   TableBody,
@@ -2008,11 +2009,15 @@ function MacroThermometerPanel() {
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      await refreshMacro();
+      const result = await refreshMacro();
+      // V4.2 P4: 刷新成功后显示提示 + 重新拉取温度计和提示数据
+      const successCount = Object.values(result.results || {}).filter(v => v !== null).length;
+      const totalCount = Object.keys(result.results || {}).length;
+      toast.success(`宏观刷新完成: ${successCount}/${totalCount} 个指标成功`);
       macroTempQuery.refetch();
       macroPromptsQuery.refetch();
-    } catch {
-      // 静默失败, 上游已有兜底
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '宏观刷新失败');
     } finally {
       setIsRefreshing(false);
     }
