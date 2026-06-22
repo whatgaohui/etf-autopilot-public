@@ -87,3 +87,8 @@ venv/
 /*.jpeg
 /*.gif
 /*.webp
+
+# ============ V4.2 开发测试截图(不推送) ============
+/v42-shots/
+/e2-shots/
+/screenshots/
