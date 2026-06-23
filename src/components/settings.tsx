@@ -120,6 +120,12 @@ import {
   getFetchLogs,
   updateThreshold,
   getQualitySummary,
+  // V4.2 P5-C: 数据采集服务控制面板所需 API
+  getDataSourceStatus as getDataSourceStatusApi,
+  getMacroTemperature,
+  refreshMarketData as refreshMarketDataApi,
+  refreshMacro,
+  recomputeQuality,
   type FieldSourceConfig,
   type CrossCheckRecord,
   type CrossCheckStats,
@@ -127,6 +133,8 @@ import {
   type DataSourceRegistryItem,
   type FetchLogItem,
   type QualityScoreItem,
+  type DataSourceStatus,
+  type MacroMetricItem,
 } from '@/lib/api'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1556,6 +1564,272 @@ function adapterAvailableColor(available: boolean, status?: string): string {
     : 'text-amber-700 bg-amber-100 border-amber-300'
 }
 
+// ─── V4.2 P5-C: 数据采集服务控制面板 ─────────────────────────────────────────
+// 集成在 DataSourceSection 卡片顶部，提供：
+// 1. 服务状态展示（data-service 状态 / 最近刷新 / 缓存量 / 宏观指标 / 质量评分）
+// 2. 4 个操作按钮：刷新行情 / 刷新宏观 / 重算质量 / 测试连通性
+
+function DataServiceControlCard() {
+  const queryClient = useQueryClient()
+  const [refreshingMarket, setRefreshingMarket] = useState(false)
+  const [refreshingMacro, setRefreshingMacro] = useState(false)
+  const [recomputingQuality, setRecomputingQuality] = useState(false)
+  const [testingSources, setTestingSources] = useState(false)
+  const [testResults, setTestResults] = useState<Array<{ source: string; connected: boolean; latencyMs: number; message: string }>>([])
+
+  // 服务状态（30s 自动刷新；与 SourcesListTab 共享 cache）
+  const { data: dsStatus } = useQuery<DataSourceStatus>({
+    queryKey: ['data-source-status'],
+    queryFn: getDataSourceStatusApi,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  })
+
+  const { data: qualitySummary } = useQuery({
+    queryKey: ['data-quality-summary'],
+    queryFn: getQualitySummary,
+    refetchInterval: 30_000,
+  })
+
+  const { data: macroData } = useQuery<{ items: MacroMetricItem[] }>({
+    queryKey: ['macro-temperature-status'],
+    queryFn: getMacroTemperature,
+    refetchInterval: 60_000,
+  })
+
+  const macroItems = macroData?.items ?? []
+  const macroNormal = macroItems.filter(
+    (it) => it.quality_status === 'excellent' || it.quality_status === 'usable'
+  ).length
+  const macroTotal = macroItems.length || 4
+
+  // ── Handlers ────────────────────────────────────────────────────────────
+  const handleRefreshMarket = async () => {
+    setRefreshingMarket(true)
+    toast.info('行情刷新中，约 1-3 分钟，请稍候')
+    try {
+      const res = await refreshMarketDataApi()
+      const updated = res.updated_codes?.length ?? 0
+      toast.success(res.message || `行情刷新完成，已更新 ${updated} 只 ETF`)
+      queryClient.invalidateQueries({ queryKey: ['data-source-status'] })
+      queryClient.invalidateQueries({ queryKey: ['data-quality-summary'] })
+      queryClient.invalidateQueries({ queryKey: ['data-source-registry'] })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '行情刷新失败')
+    } finally {
+      setRefreshingMarket(false)
+    }
+  }
+
+  const handleRefreshMacro = async () => {
+    setRefreshingMacro(true)
+    try {
+      const res = await refreshMacro()
+      const results = res.results ?? {}
+      const total = Object.keys(results).length || 4
+      const successCount = Object.values(results).filter(
+        (v) => v !== null && v !== undefined
+      ).length
+      toast.success(`宏观刷新完成: ${successCount}/${total} 成功`)
+      queryClient.invalidateQueries({ queryKey: ['macro-temperature-status'] })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '宏观刷新失败')
+    } finally {
+      setRefreshingMacro(false)
+    }
+  }
+
+  const handleRecomputeQuality = async () => {
+    setRecomputingQuality(true)
+    try {
+      const res = await recomputeQuality()
+      if (res.success) {
+        toast.success(
+          `质量评分已重算: ${res.total_metrics} 个指标，平均分 ${res.avg_score}`
+        )
+        queryClient.invalidateQueries({ queryKey: ['data-quality-summary'] })
+        queryClient.invalidateQueries({ queryKey: ['data-quality-summary-matrix'] })
+      } else {
+        toast.error('质量重算未成功')
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '质量重算失败')
+    } finally {
+      setRecomputingQuality(false)
+    }
+  }
+
+  const handleTestSources = async () => {
+    setTestingSources(true)
+    try {
+      const res = await testDataSources()
+      setTestResults(res)
+      const ok = res.filter((d) => d.connected).length
+      toast.success(`连通性测试完成: ${ok}/${res.length} 个数据源正常`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '连通性测试失败')
+    } finally {
+      setTestingSources(false)
+    }
+  }
+
+  // 服务在线判定：有 dsStatus 或 qualitySummary 任一能拉到，说明 data-service 在跑
+  const serviceOnline = !!dsStatus || !!qualitySummary
+
+  return (
+    <div className="rounded-lg border border-emerald-200/60 bg-emerald-50/30 dark:border-emerald-900/40 dark:bg-emerald-950/10 p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Activity className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+        <span className="text-sm font-semibold">数据采集服务控制</span>
+        <Badge
+          variant="outline"
+          className={`ml-auto text-[10px] ${
+            serviceOnline
+              ? 'text-emerald-700 border-emerald-300 bg-emerald-50 dark:text-emerald-300 dark:border-emerald-700 dark:bg-emerald-950/40'
+              : 'text-muted-foreground border-muted-foreground/30 bg-muted/40'
+          }`}
+        >
+          <span
+            className={`inline-block h-1.5 w-1.5 rounded-full mr-1 ${
+              serviceOnline ? 'bg-emerald-500' : 'bg-muted-foreground/50'
+            }`}
+          />
+          {serviceOnline ? '运行中' : '已停止'}
+        </Badge>
+      </div>
+
+      {/* 状态展示 grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <div className="rounded-md border bg-background/60 p-2 flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">最近行情刷新</span>
+          <span className="font-mono text-[11px] font-bold leading-tight pt-0.5">
+            {dsStatus?.lastDataUpdate ? formatDateTime(dsStatus.lastDataUpdate) : '—'}
+          </span>
+        </div>
+        <div className="rounded-md border bg-background/60 p-2 flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">缓存数据量</span>
+          <span className="font-mono text-sm font-bold leading-tight pt-0.5">
+            {dsStatus?.cacheRows ?? '—'}
+            <span className="text-[10px] text-muted-foreground font-normal"> 行</span>
+          </span>
+        </div>
+        <div className="rounded-md border bg-background/60 p-2 flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">宏观指标</span>
+          <span className="font-medium leading-tight pt-0.5">
+            <span
+              className={
+                macroNormal === macroTotal
+                  ? 'text-emerald-700 dark:text-emerald-300'
+                  : 'text-amber-700 dark:text-amber-300'
+              }
+            >
+              {macroNormal}/{macroTotal}
+            </span>
+            <span className="text-muted-foreground"> 正常</span>
+          </span>
+        </div>
+        <div className="rounded-md border bg-background/60 p-2 flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">数据质量评分</span>
+          <span className="font-mono text-sm font-bold leading-tight pt-0.5">
+            {qualitySummary ? qualitySummary.avg_score.toFixed(1) : '—'}
+            <span className="text-[10px] text-muted-foreground font-normal"> / 100</span>
+          </span>
+        </div>
+      </div>
+
+      {/* 4 个操作按钮 */}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          onClick={handleRefreshMarket}
+          disabled={refreshingMarket}
+        >
+          {refreshingMarket ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5 mr-1" />
+          )}
+          {refreshingMarket ? '刷新中...' : '刷新行情数据'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleRefreshMacro}
+          disabled={refreshingMacro}
+        >
+          {refreshingMacro ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+          ) : (
+            <Activity className="h-3.5 w-3.5 mr-1" />
+          )}
+          {refreshingMacro ? '刷新中...' : '刷新宏观数据'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleRecomputeQuality}
+          disabled={recomputingQuality}
+        >
+          {recomputingQuality ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+          ) : (
+            <Database className="h-3.5 w-3.5 mr-1" />
+          )}
+          {recomputingQuality ? '重算中...' : '重新计算质量评分'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleTestSources}
+          disabled={testingSources}
+        >
+          {testingSources ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+          ) : (
+            <Wifi className="h-3.5 w-3.5 mr-1" />
+          )}
+          {testingSources ? '测试中...' : '测试数据源连通性'}
+        </Button>
+      </div>
+
+      {/* 连通性测试结果 */}
+      {testResults.length > 0 && (
+        <div className="space-y-1.5 pt-1">
+          <div className="text-[11px] font-medium text-muted-foreground">
+            连通性测试结果
+          </div>
+          <div className="max-h-48 overflow-y-auto pr-1 space-y-1.5">
+            {testResults.map((r) => (
+              <div
+                key={r.source}
+                className="flex items-center gap-2 text-[11px] p-2 rounded-md border bg-background/60"
+              >
+                {r.connected ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                ) : (
+                  <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                )}
+                <span className="font-medium truncate">{r.source}</span>
+                {r.connected && r.latencyMs > 0 && (
+                  <Badge
+                    variant="outline"
+                    className="text-[9px] px-1 py-0 text-emerald-700 border-emerald-300"
+                  >
+                    {r.latencyMs}ms
+                  </Badge>
+                )}
+                <span className="text-muted-foreground truncate ml-auto">
+                  {r.message}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DataSourceSection() {
   return (
     <Card>
@@ -1568,7 +1842,8 @@ function DataSourceSection() {
           主源 + 备源 + 交叉校验 + 数据血缘 + 拉取日志 + 质量结果（策略书§4 / V4.1 §10.10）。Tab 切换查看：数据源列表 / 字段级配置 / 交叉校验 / 数据血缘 / 拉取日志 / 质量结果。
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <DataServiceControlCard />
         <Tabs defaultValue="sources" className="w-full">
           <TabsList className="grid grid-cols-3 sm:grid-cols-6 h-auto w-full">
             <TabsTrigger value="sources" className="text-xs gap-1">
@@ -4058,14 +4333,71 @@ export default function SettingsTab() {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-4xl mx-auto">
-      <TargetAllocationSection configs={etfConfigs} />
-      <WeeklyBudgetSection configs={systemConfigs} />
-      <RuleManagementSection rules={rules} etfMap={etfMap} />
-      <BlacklistSection configs={etfConfigs} />
-      <DataSourceSection />
-      <DataQualityConfigSection />
-      <CashPoolConfigSection configs={systemConfigs} />
-      <NotifyConfigSection configs={systemConfigs} />
+      <SettingsSectionNav />
+      <div id="section-target" className="scroll-mt-20">
+        <TargetAllocationSection configs={etfConfigs} />
+      </div>
+      <div id="section-budget" className="scroll-mt-20">
+        <WeeklyBudgetSection configs={systemConfigs} />
+      </div>
+      <div id="section-rules" className="scroll-mt-20">
+        <RuleManagementSection rules={rules} etfMap={etfMap} />
+      </div>
+      <div id="section-blacklist" className="scroll-mt-20">
+        <BlacklistSection configs={etfConfigs} />
+      </div>
+      <div id="section-datasource" className="scroll-mt-20">
+        <DataSourceSection />
+      </div>
+      <div id="section-quality" className="scroll-mt-20">
+        <DataQualityConfigSection />
+      </div>
+      <div id="section-cashpool" className="scroll-mt-20">
+        <CashPoolConfigSection configs={systemConfigs} />
+      </div>
+      <div id="section-notify" className="scroll-mt-20">
+        <NotifyConfigSection configs={systemConfigs} />
+      </div>
+    </div>
+  )
+}
+
+// ─── V4.2 P5-B: Settings page section navigation (sticky anchor bar) ────────
+
+const SETTINGS_SECTION_DEFS: Array<{ id: string; label: string }> = [
+  { id: 'section-target', label: '目标配置' },
+  { id: 'section-budget', label: '定投额度' },
+  { id: 'section-rules', label: '规则管理' },
+  { id: 'section-blacklist', label: '黑名单' },
+  { id: 'section-datasource', label: '数据源管理' },
+  { id: 'section-quality', label: '数据质量' },
+  { id: 'section-cashpool', label: '现金水池' },
+  { id: 'section-notify', label: '通知' },
+]
+
+function SettingsSectionNav() {
+  const handleJump = (id: string) => {
+    const el = document.getElementById(id)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+  return (
+    <div className="sticky top-0 z-30 -mx-4 sm:-mx-6 px-4 sm:px-6 py-2 bg-background/80 backdrop-blur border-b">
+      <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+        {SETTINGS_SECTION_DEFS.map((s) => (
+          <Button
+            key={s.id}
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="shrink-0 h-8 px-3 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => handleJump(s.id)}
+          >
+            {s.label}
+          </Button>
+        ))}
+      </div>
     </div>
   )
 }

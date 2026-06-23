@@ -650,3 +650,16 @@ export async function updateMacroConfig(
     body: JSON.stringify({ id, threshold_value: thresholdValue, enabled }),
   });
 }
+
+// V4.2 P5-C: 重新计算质量评分
+// 后端代理：POST /api/data-quality → data-service POST /api/data-quality/recompute
+// 基于现有缓存数据重算（约5秒，不重新拉数）
+export async function recomputeQuality(): Promise<{
+  success: boolean;
+  total_metrics: number;
+  avg_score: number;
+  allow_buy_suggestion: boolean;
+  allow_rebalance_suggestion: boolean;
+}> {
+  return request('/data-quality', { method: 'POST' });
+}

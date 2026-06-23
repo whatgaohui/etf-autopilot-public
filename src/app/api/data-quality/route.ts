@@ -3,6 +3,38 @@ import { ensureDataServiceRunning } from '@/lib/data-service';
 
 const PYTHON_SERVICE = 'http://127.0.0.1:3031';
 
+// V4.2 P5-C: POST /api/data-quality — 代理到 data-service 的 /api/data-quality/recompute
+// 用于"重新计算质量评分"按钮（约5秒，不重新拉数，只基于现有缓存重算）
+export async function POST() {
+  try {
+    const isUp = await ensureDataServiceRunning();
+    if (!isUp) {
+      return NextResponse.json(
+        { success: false, error: 'data-service unavailable' },
+        { status: 503 }
+      );
+    }
+    const resp = await fetch(`${PYTHON_SERVICE}/api/data-quality/recompute`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!resp.ok) {
+      return NextResponse.json(
+        { success: false, error: `data-service returned ${resp.status}` },
+        { status: 502 }
+      );
+    }
+    const data = await resp.json();
+    return NextResponse.json(data);
+  } catch (e) {
+    console.error('data-quality POST (recompute) error:', e);
+    return NextResponse.json(
+      { success: false, error: 'Failed to recompute quality scores' },
+      { status: 500 }
+    );
+  }
+}
+
 // GET /api/data-quality?type=... — 转发到 data-service data-quality 路由
 // type 支持: summary | by-code | logs | conflicts | fetch-logs
 // 额外 query 参数透传（limit/status/code/source_id）
