@@ -1266,7 +1266,7 @@ function RuleManagementSection({ rules, etfMap }: { rules: RuleConfig[]; etfMap:
           />
         </div>
         {/* PRD§9.2 规则分组3-5: 再平衡/数据质量/现金水池（在其他卡片配置） */}
-        <div className="rounded-md border border-muted bg-muted/20 p-3 space-y-1.5 text-[11px] text-muted-foreground">
+        <div className="rounded-md border border-muted bg-muted/20 p-3 space-y-1.5 text-xs text-muted-foreground">
           <div className="font-medium text-foreground">其他规则分组</div>
           <div className="flex items-center gap-1.5">
             <ShieldMinus className="h-3 w-3 text-orange-500" />
@@ -1716,7 +1716,7 @@ function DataServiceControlCard() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
         <div className="rounded-md border bg-background/60 p-2 flex flex-col gap-0.5">
           <span className="text-[10px] text-muted-foreground">最近行情刷新</span>
-          <span className="font-mono text-[11px] font-bold leading-tight pt-0.5">
+          <span className="font-mono text-xs font-bold leading-tight pt-0.5">
             {dsStatus?.lastDataUpdate ? formatDateTime(dsStatus.lastDataUpdate) : '—'}
           </span>
         </div>
@@ -1809,14 +1809,14 @@ function DataServiceControlCard() {
       {/* 连通性测试结果 */}
       {testResults.length > 0 && (
         <div className="space-y-1.5 pt-1">
-          <div className="text-[11px] font-medium text-muted-foreground">
+          <div className="text-xs font-medium text-muted-foreground">
             连通性测试结果
           </div>
           <div className="max-h-48 overflow-y-auto pr-1 space-y-1.5">
             {testResults.map((r) => (
               <div
                 key={r.source}
-                className="flex items-center gap-2 text-[11px] p-2 rounded-md border bg-background/60"
+                className="flex items-center gap-2 text-xs p-2 rounded-md border bg-background/60"
               >
                 {r.connected ? (
                   <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
@@ -1827,7 +1827,7 @@ function DataServiceControlCard() {
                 {r.connected && r.latencyMs > 0 && (
                   <Badge
                     variant="outline"
-                    className="text-[9px] px-1 py-0 text-emerald-700 border-emerald-300"
+                    className="text-[10px] px-1 py-0 text-emerald-700 border-emerald-300"
                   >
                     {r.latencyMs}ms
                   </Badge>
@@ -2016,7 +2016,7 @@ function SourcesListTab() {
           </div>
           <div className="rounded-md border bg-muted/30 p-2">
             <div className="text-[10px] text-muted-foreground">最近更新</div>
-            <div className="font-mono text-[11px] font-bold leading-tight pt-1">{formatDateTime(status.lastDataUpdate)}</div>
+            <div className="font-mono text-xs font-bold leading-tight pt-1">{formatDateTime(status.lastDataUpdate)}</div>
           </div>
         </div>
       )}
@@ -2050,7 +2050,7 @@ function SourcesListTab() {
         <Button
           size="sm"
           variant="ghost"
-          className="text-[11px] h-8"
+          className="text-xs h-8"
           onClick={() => queryClient.invalidateQueries({ queryKey: ['data-source-registry'] })}
         >
           <RefreshCw className="h-3 w-3 mr-1" />
@@ -2061,9 +2061,9 @@ function SourcesListTab() {
       {/* 连通性测试结果 */}
       {testResults.length > 0 && (
         <div className="space-y-1.5 pt-1">
-          <div className="text-[11px] font-medium text-muted-foreground">连通性测试结果</div>
+          <div className="text-xs font-medium text-muted-foreground">连通性测试结果</div>
           {testResults.map((r) => (
-            <div key={r.source} className="flex items-center gap-2 text-[11px] p-2 rounded-md border bg-card/50">
+            <div key={r.source} className="flex items-center gap-2 text-xs p-2 rounded-md border bg-card/50">
               {r.connected ? (
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
               ) : (
@@ -2071,7 +2071,7 @@ function SourcesListTab() {
               )}
               <span className="font-medium">{r.source}</span>
               {r.connected && r.latencyMs > 0 && (
-                <Badge variant="outline" className="text-[9px] px-1 py-0 text-emerald-700 border-emerald-300">
+                <Badge variant="outline" className="text-[10px] px-1 py-0 text-emerald-700 border-emerald-300">
                   {r.latencyMs}ms
                 </Badge>
               )}
@@ -2093,7 +2093,7 @@ function SourcesListTab() {
         <CollapsibleContent className="px-3 pb-3 space-y-2">
           <Alert className="border-amber-200 bg-amber-50/60 text-amber-900">
             <AlertCircle className="h-4 w-4 text-amber-700" />
-            <AlertTitle className="text-[11px]">场景 1：主源失败如何切备源</AlertTitle>
+            <AlertTitle className="text-xs">场景 1：主源失败如何切备源</AlertTitle>
             <AlertDescription className="text-[10px] leading-relaxed">
               系统会自动降级到备源（efinance / tushare），无需手动干预；如需强制指定使用某源，
               可前往"字段级配置"Tab 使用"强制切源"按钮覆盖默认优先级（用于排查数据异常）。
@@ -2101,7 +2101,7 @@ function SourcesListTab() {
           </Alert>
           <Alert className="border-amber-200 bg-amber-50/60 text-amber-900">
             <Key className="h-4 w-4 text-amber-700" />
-            <AlertTitle className="text-[11px]">场景 2：Token 失效如何处理</AlertTitle>
+            <AlertTitle className="text-xs">场景 2：Token 失效如何处理</AlertTitle>
             <AlertDescription className="text-[10px] leading-relaxed">
               点击数据源行的"配置 Token"按钮重新输入 Token，保存后立即生效（Fernet 加密存储）。
               旧 Token 失效不会影响其他数据源，仅该源会退化为"待配置"状态。
@@ -2109,7 +2109,7 @@ function SourcesListTab() {
           </Alert>
           <Alert className="border-amber-200 bg-amber-50/60 text-amber-900">
             <Zap className="h-4 w-4 text-amber-700" />
-            <AlertTitle className="text-[11px]">场景 3：限流如何降级</AlertTitle>
+            <AlertTitle className="text-xs">场景 3：限流如何降级</AlertTitle>
             <AlertDescription className="text-[10px] leading-relaxed">
               系统自动降级到备源，无需手动干预。每个数据源已配置 rate_limit_per_min 限流参数，
               触发限流时记录"error"日志到"拉取日志"Tab，并立即尝试备源拉取，刷新不阻断。
@@ -2185,7 +2185,7 @@ function DataSourceRow({
             </Badge>
           )}
         </div>
-        <p className="text-[11px] text-muted-foreground">{source.description}</p>
+        <p className="text-xs text-muted-foreground">{source.description}</p>
         {source.sub_sources && (
           <p className="text-[10px] text-muted-foreground/70 font-mono">
             子源: {source.sub_sources}
@@ -2203,7 +2203,7 @@ function DataSourceRow({
               else if (c.is_validator) { roleText = '校验'; color = 'text-amber-700 bg-amber-50 border-amber-300' }
               if (!roleText) return null
               return (
-                <Badge key={c.metric_type} variant="outline" className={`text-[9px] px-1 py-0 ${color}`}>
+                <Badge key={c.metric_type} variant="outline" className={`text-[10px] px-1 py-0 ${color}`}>
                   {label}·{roleText}
                 </Badge>
               )
@@ -2257,7 +2257,7 @@ function DataSourceRow({
           <Button
             size="sm"
             variant="outline"
-            className="h-7 px-2 text-[11px]"
+            className="h-7 px-2 text-xs"
             onClick={onConfigureToken}
           >
             <Key className="h-3 w-3 mr-1" />
@@ -2273,7 +2273,7 @@ function DataSourceRow({
           {pendingToggle && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
         </div>
         {isAkshare && (
-          <span className="text-[9px] text-muted-foreground/70 italic">主源必启</span>
+          <span className="text-[10px] text-muted-foreground/70 italic">主源必启</span>
         )}
       </div>
     </div>
@@ -2457,15 +2457,15 @@ function ThresholdsEditor({
       <div className="flex items-center gap-1.5 text-xs font-medium">
         <ShieldAlert className="h-3.5 w-3.5 text-amber-600" />
         <span>双源校验容忍阈值</span>
-        <Badge variant="outline" className="text-[9px] px-1 py-0 text-amber-700 bg-amber-50 border-amber-300">可编辑</Badge>
+        <Badge variant="outline" className="text-[10px] px-1 py-0 text-amber-700 bg-amber-50 border-amber-300">可编辑</Badge>
       </div>
       <div className="rounded-md border overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="h-7 text-[11px]">字段</TableHead>
-              <TableHead className="h-7 text-[11px] text-right">容忍差异</TableHead>
-              <TableHead className="h-7 text-[11px] text-right w-[120px]">操作</TableHead>
+              <TableHead className="h-7 text-xs">字段</TableHead>
+              <TableHead className="h-7 text-xs text-right">容忍差异</TableHead>
+              <TableHead className="h-7 text-xs text-right w-[120px]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -2474,11 +2474,11 @@ function ThresholdsEditor({
               const isSavingThis = savingKey === t.key
               return (
                 <TableRow key={t.key}>
-                  <TableCell className="py-1.5 text-[11px]">
+                  <TableCell className="py-1.5 text-xs">
                     <div>{t.label}</div>
-                    <div className="text-[9px] text-muted-foreground/70 font-mono">{t.key} · {t.threshold_type}</div>
+                    <div className="text-[10px] text-muted-foreground/70 font-mono">{t.key} · {t.threshold_type}</div>
                   </TableCell>
-                  <TableCell className="py-1.5 text-[11px] text-right">
+                  <TableCell className="py-1.5 text-xs text-right">
                     {isEditing ? (
                       <div className="flex items-center justify-end gap-1">
                         <Input
@@ -2498,7 +2498,7 @@ function ThresholdsEditor({
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="py-1.5 text-[11px] text-right">
+                  <TableCell className="py-1.5 text-xs text-right">
                     {isEditing ? (
                       <div className="flex items-center justify-end gap-1">
                         <Button
@@ -2573,7 +2573,7 @@ function FieldConfigsTab() {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-sky-200/60 bg-sky-50/30 p-2.5 text-[11px] text-muted-foreground leading-relaxed">
+      <div className="rounded-md border border-sky-200/60 bg-sky-50/30 p-2.5 text-xs text-muted-foreground leading-relaxed">
         <span className="font-medium text-sky-800">V4 策略书§4.3：</span>
         按字段配置主备源优先级。主源失败时自动切备源；强制源会覆盖默认优先级（用于排查数据异常）。
       </div>
@@ -2589,21 +2589,21 @@ function FieldConfigsTab() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="h-8 text-[11px] whitespace-nowrap">字段</TableHead>
-                <TableHead className="h-8 text-[11px] whitespace-nowrap">主源</TableHead>
-                <TableHead className="h-8 text-[11px] whitespace-nowrap">备源</TableHead>
-                <TableHead className="h-8 text-[11px] whitespace-nowrap">强制源</TableHead>
-                <TableHead className="h-8 text-[11px] whitespace-nowrap text-right">操作</TableHead>
+                <TableHead className="h-8 text-xs whitespace-nowrap">字段</TableHead>
+                <TableHead className="h-8 text-xs whitespace-nowrap">主源</TableHead>
+                <TableHead className="h-8 text-xs whitespace-nowrap">备源</TableHead>
+                <TableHead className="h-8 text-xs whitespace-nowrap">强制源</TableHead>
+                <TableHead className="h-8 text-xs whitespace-nowrap text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {fields.map((f) => {
                 return (
                   <TableRow key={f.field}>
-                    <TableCell className="py-2 text-[11px] font-medium whitespace-nowrap">
+                    <TableCell className="py-2 text-xs font-medium whitespace-nowrap">
                       {f.field_label}
                     </TableCell>
-                    <TableCell className="py-2 text-[11px]">
+                    <TableCell className="py-2 text-xs">
                       <div className="flex flex-wrap gap-1">
                         {f.primary_sources.length === 0 ? (
                           <span className="text-muted-foreground/60">—</span>
@@ -2621,7 +2621,7 @@ function FieldConfigsTab() {
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="py-2 text-[11px]">
+                    <TableCell className="py-2 text-xs">
                       <div className="flex flex-wrap gap-1">
                         {f.backup_sources.length === 0 ? (
                           <span className="text-muted-foreground/60">—</span>
@@ -2639,7 +2639,7 @@ function FieldConfigsTab() {
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="py-2 text-[11px]">
+                    <TableCell className="py-2 text-xs">
                       {f.forced_source ? (
                         <div className="flex items-center gap-1">
                           <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-700 bg-amber-100 border-amber-300">
@@ -2665,7 +2665,7 @@ function FieldConfigsTab() {
                         <span className="text-muted-foreground/60">—</span>
                       )}
                     </TableCell>
-                    <TableCell className="py-2 text-[11px] text-right whitespace-nowrap">
+                    <TableCell className="py-2 text-xs text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -2681,7 +2681,7 @@ function FieldConfigsTab() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-48">
-                            <DropdownMenuLabel className="text-[11px]">
+                            <DropdownMenuLabel className="text-xs">
                               选择强制源（{f.field_label}）
                             </DropdownMenuLabel>
                             <DropdownMenuSeparator />
@@ -2690,7 +2690,7 @@ function FieldConfigsTab() {
                               return (
                                 <DropdownMenuItem
                                   key={src}
-                                  className="text-[11px] cursor-pointer"
+                                  className="text-xs cursor-pointer"
                                   onSelect={() =>
                                     forceSwitchMutation.mutate({ field: f.field, source: src })
                                   }
@@ -2705,7 +2705,7 @@ function FieldConfigsTab() {
                                       {ad?.display_name || ad?.name || src}
                                     </span>
                                     {!ad?.available && (
-                                      <span className="text-[9px] text-amber-700">不可用</span>
+                                      <span className="text-[10px] text-amber-700">不可用</span>
                                     )}
                                   </div>
                                 </DropdownMenuItem>
@@ -2814,7 +2814,7 @@ function EditFieldConfigDialog({
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
-                  <label className="flex items-center gap-1 text-[11px] cursor-pointer">
+                  <label className="flex items-center gap-1 text-xs cursor-pointer">
                     <input
                       type="checkbox"
                       checked={isPrimary}
@@ -2832,7 +2832,7 @@ function EditFieldConfigDialog({
                     />
                     <span className="text-emerald-700">主源</span>
                   </label>
-                  <label className="flex items-center gap-1 text-[11px] cursor-pointer">
+                  <label className="flex items-center gap-1 text-xs cursor-pointer">
                     <input
                       type="checkbox"
                       checked={isBackup}
@@ -3004,7 +3004,7 @@ function CrossCheckTab() {
 
         {runResults && (
           <div className="pt-2 space-y-1.5">
-            <div className="text-[11px] font-medium text-muted-foreground">
+            <div className="text-xs font-medium text-muted-foreground">
               本次校验结果（{runResults.length} 条）
             </div>
             <CrossCheckRecordsTable records={runResults} />
@@ -3078,23 +3078,23 @@ function CrossCheckRecordsTable({ records }: { records: CrossCheckRecord[] }) {
                 <TableCell className="py-1.5 text-[10px] font-mono whitespace-nowrap text-muted-foreground">
                   {formatDateTime(r.fetch_time)}
                 </TableCell>
-                <TableCell className="py-1.5 text-[11px] whitespace-nowrap">
+                <TableCell className="py-1.5 text-xs whitespace-nowrap">
                   {FIELD_LABEL_MAP[r.field] || r.field}
                 </TableCell>
                 <TableCell className="py-1.5 text-[10px] font-mono whitespace-nowrap">
                   {r.code}
                 </TableCell>
-                <TableCell className="py-1.5 text-[11px] font-mono text-right whitespace-nowrap">
+                <TableCell className="py-1.5 text-xs font-mono text-right whitespace-nowrap">
                   {r.primary_value ?? '—'}
                 </TableCell>
-                <TableCell className="py-1.5 text-[11px] font-mono text-right whitespace-nowrap">
+                <TableCell className="py-1.5 text-xs font-mono text-right whitespace-nowrap">
                   {r.backup_value ?? '—'}
                 </TableCell>
-                <TableCell className="py-1.5 text-[11px] font-mono text-right whitespace-nowrap">
+                <TableCell className="py-1.5 text-xs font-mono text-right whitespace-nowrap">
                   {diffDisplay}
                 </TableCell>
                 <TableCell className="py-1.5 text-[10px] whitespace-nowrap">
-                  <Badge variant="outline" className={`text-[9px] px-1 py-0 ${sm.color}`}>
+                  <Badge variant="outline" className={`text-[10px] px-1 py-0 ${sm.color}`}>
                     {sm.label}
                   </Badge>
                 </TableCell>
@@ -3135,7 +3135,7 @@ function DataLineageTab() {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-sky-200/60 bg-sky-50/30 p-2.5 text-[11px] text-muted-foreground leading-relaxed">
+      <div className="rounded-md border border-sky-200/60 bg-sky-50/30 p-2.5 text-xs text-muted-foreground leading-relaxed">
         <span className="font-medium text-sky-800">V4 策略书§4.5：</span>
         数据血缘追踪 — 选 ETF 与数据类型，查看该数据的来源、原始值、清洗值、分位窗口及完整 JSON 快照。
         <span className="text-amber-700"> 注：估值类型 code 自动映射为指数代码。</span>
@@ -3188,7 +3188,7 @@ function DataLineageTab() {
         <div className="flex flex-col items-center justify-center gap-2 p-8 rounded-md border border-dashed bg-muted/20 text-center">
           <GitBranch className="h-8 w-8 text-muted-foreground/50" />
           <div className="text-sm font-medium text-muted-foreground">未找到该数据类型的缓存记录</div>
-          <div className="text-[11px] text-muted-foreground/70">
+          <div className="text-xs text-muted-foreground/70">
             请确认该 ETF/数据类型已通过数据刷新获取，或查看其他组合
           </div>
           {lineage?.message && (
@@ -3205,7 +3205,7 @@ function DataLineageTab() {
               <Info className="h-3.5 w-3.5 text-sky-600" />
               <span>基础信息</span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
               <LineageItem label="代码" value={lineage.code} mono />
               <LineageItem label="数据类型" value={FIELD_LABEL_MAP[lineage.data_type || ''] || lineage.data_type} />
               <LineageItem label="日期" value={lineage.date} mono />
@@ -3221,7 +3221,7 @@ function DataLineageTab() {
               <Activity className="h-3.5 w-3.5 text-emerald-600" />
               <span>数值信息</span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
               <LineageItem label="原始值" value={lineage.raw_value ?? '—'} mono />
               <LineageItem label="清洗值" value={lineage.clean_value != null ? String(lineage.clean_value) : '—'} mono />
               <LineageItem label="分位值" value={lineage.percentile != null ? `${lineage.percentile.toFixed(2)}` : '—'} mono />
@@ -3235,7 +3235,7 @@ function DataLineageTab() {
               <Database className="h-3.5 w-3.5 text-sky-600" />
               <span>数据来源</span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
               <LineageItem label="源适配器" value={lineage.source} mono />
               <LineageItem label="源 API" value={lineage.source_api} mono />
             </div>
@@ -3315,7 +3315,7 @@ function LineageItem({
   return (
     <div className="space-y-0.5">
       <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className={`text-[11px] ${mono ? 'font-mono' : ''} break-all`}>
+      <div className={`text-xs ${mono ? 'font-mono' : ''} break-all`}>
         {value ?? '—'}
       </div>
     </div>
@@ -3351,7 +3351,7 @@ function FetchLogsTab() {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-sky-200/60 bg-sky-50/30 p-2.5 text-[11px] text-muted-foreground leading-relaxed">
+      <div className="rounded-md border border-sky-200/60 bg-sky-50/30 p-2.5 text-xs text-muted-foreground leading-relaxed">
         <span className="font-medium text-sky-800">V4.1 §13.9 data_fetch_log 表：</span>
         每次拉取（success/error/skipped/no_data）都会写入拉取日志，包含 request_id 追踪、延迟、错误信息。
         支持按状态过滤、按 limit 控制（最大 500 条）。
@@ -3360,7 +3360,7 @@ function FetchLogsTab() {
       {/* 工具栏：状态过滤 + 条数 + 刷新 */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex items-center gap-1.5">
-          <Label className="text-[11px] text-muted-foreground">状态</Label>
+          <Label className="text-xs text-muted-foreground">状态</Label>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger size="sm" className="h-8 w-[120px] text-xs">
               <SelectValue placeholder="全部" />
@@ -3375,7 +3375,7 @@ function FetchLogsTab() {
           </Select>
         </div>
         <div className="flex items-center gap-1.5">
-          <Label className="text-[11px] text-muted-foreground">条数</Label>
+          <Label className="text-xs text-muted-foreground">条数</Label>
           <Select value={String(limit)} onValueChange={(v) => setLimit(Number(v))}>
             <SelectTrigger size="sm" className="h-8 w-[90px] text-xs">
               <SelectValue />
@@ -3420,14 +3420,14 @@ function FetchLogsTab() {
             <Table>
               <TableHeader className="sticky top-0 bg-card z-10">
                 <TableRow>
-                  <TableHead className="h-8 text-[11px] whitespace-nowrap">时间</TableHead>
-                  <TableHead className="h-8 text-[11px] whitespace-nowrap">数据源</TableHead>
-                  <TableHead className="h-8 text-[11px] whitespace-nowrap">指标</TableHead>
-                  <TableHead className="h-8 text-[11px] whitespace-nowrap">代码</TableHead>
-                  <TableHead className="h-8 text-[11px] whitespace-nowrap">状态</TableHead>
-                  <TableHead className="h-8 text-[11px] whitespace-nowrap text-right">行数</TableHead>
-                  <TableHead className="h-8 text-[11px] whitespace-nowrap text-right">延迟</TableHead>
-                  <TableHead className="h-8 text-[11px] whitespace-nowrap">错误信息</TableHead>
+                  <TableHead className="h-8 text-xs whitespace-nowrap">时间</TableHead>
+                  <TableHead className="h-8 text-xs whitespace-nowrap">数据源</TableHead>
+                  <TableHead className="h-8 text-xs whitespace-nowrap">指标</TableHead>
+                  <TableHead className="h-8 text-xs whitespace-nowrap">代码</TableHead>
+                  <TableHead className="h-8 text-xs whitespace-nowrap">状态</TableHead>
+                  <TableHead className="h-8 text-xs whitespace-nowrap text-right">行数</TableHead>
+                  <TableHead className="h-8 text-xs whitespace-nowrap text-right">延迟</TableHead>
+                  <TableHead className="h-8 text-xs whitespace-nowrap">错误信息</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -3441,11 +3441,11 @@ function FetchLogsTab() {
                       <TableCell className="py-1.5 text-[10px] font-mono whitespace-nowrap text-muted-foreground">
                         {formatDateTime(log.fetch_time)}
                       </TableCell>
-                      <TableCell className="py-1.5 text-[11px] font-mono whitespace-nowrap">
+                      <TableCell className="py-1.5 text-xs font-mono whitespace-nowrap">
                         {log.source_id}
                       </TableCell>
-                      <TableCell className="py-1.5 text-[11px] whitespace-nowrap">
-                        <Badge variant="outline" className="text-[9px] px-1 py-0 text-slate-700 bg-slate-50 border-slate-300">
+                      <TableCell className="py-1.5 text-xs whitespace-nowrap">
+                        <Badge variant="outline" className="text-[10px] px-1 py-0 text-slate-700 bg-slate-50 border-slate-300">
                           {FIELD_LABEL_MAP[log.metric_type] || log.metric_type}
                         </Badge>
                       </TableCell>
@@ -3453,14 +3453,14 @@ function FetchLogsTab() {
                         {log.code || '—'}
                       </TableCell>
                       <TableCell className="py-1.5 text-[10px] whitespace-nowrap">
-                        <Badge variant="outline" className={`text-[9px] px-1 py-0 ${sm.color}`}>
+                        <Badge variant="outline" className={`text-[10px] px-1 py-0 ${sm.color}`}>
                           {sm.label}
                         </Badge>
                       </TableCell>
-                      <TableCell className="py-1.5 text-[11px] font-mono text-right whitespace-nowrap">
+                      <TableCell className="py-1.5 text-xs font-mono text-right whitespace-nowrap">
                         {log.row_count || '—'}
                       </TableCell>
-                      <TableCell className="py-1.5 text-[11px] font-mono text-right whitespace-nowrap text-slate-600">
+                      <TableCell className="py-1.5 text-xs font-mono text-right whitespace-nowrap text-slate-600">
                         {log.latency_ms ? `${log.latency_ms}ms` : '—'}
                       </TableCell>
                       <TableCell
@@ -3522,7 +3522,7 @@ function DataQualityMatrixTab() {
 
   if (error) {
     return (
-      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-[11px] text-red-800">
+      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800">
         <AlertCircle className="h-4 w-4 inline-block mr-1" />
         加载质量摘要失败：{error instanceof Error ? error.message : '未知错误'}
       </div>
@@ -3552,7 +3552,7 @@ function DataQualityMatrixTab() {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-sky-200/60 bg-sky-50/30 p-2.5 text-[11px] text-muted-foreground leading-relaxed">
+      <div className="rounded-md border border-sky-200/60 bg-sky-50/30 p-2.5 text-xs text-muted-foreground leading-relaxed">
         <span className="font-medium text-sky-800">V4.1 §10.8 数据质量评分矩阵：</span>
         按 ETF × 5 指标（估值/溢价/净值/股息/行情）展示质量分 + 状态色 Badge。
         点击单元格展开看 5 子分（freshness/consistency/completeness/abnormal/sourceHealth）+ reason。
@@ -3588,9 +3588,9 @@ function DataQualityMatrixTab() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="h-8 text-[11px] whitespace-nowrap">ETF 代码</TableHead>
+                <TableHead className="h-8 text-xs whitespace-nowrap">ETF 代码</TableHead>
                 {metricTypes.map((mt) => (
-                  <TableHead key={mt} className="h-8 text-[11px] text-center whitespace-nowrap">
+                  <TableHead key={mt} className="h-8 text-xs text-center whitespace-nowrap">
                     {METRIC_LABELS[mt] || mt}
                   </TableHead>
                 ))}
@@ -3605,7 +3605,7 @@ function DataQualityMatrixTab() {
                       className="cursor-pointer hover:bg-muted/30"
                       onClick={() => setExpandedCode(isExpanded ? null : code)}
                     >
-                      <TableCell className="py-2 text-[11px] font-mono whitespace-nowrap">
+                      <TableCell className="py-2 text-xs font-mono whitespace-nowrap">
                         <div className="flex items-center gap-1">
                           {isExpanded ? (
                             <ChevronDown className="h-3 w-3 text-muted-foreground" />
@@ -3619,18 +3619,18 @@ function DataQualityMatrixTab() {
                         const item = grouped[code][mt]
                         if (!item) {
                           return (
-                            <TableCell key={mt} className="py-2 text-[11px] text-center text-muted-foreground/40">
+                            <TableCell key={mt} className="py-2 text-xs text-center text-muted-foreground/40">
                               —
                             </TableCell>
                           )
                         }
                         const badgeClass = getQualityBadgeClass(item.quality_score)
                         return (
-                          <TableCell key={mt} className="py-2 text-[11px] text-center">
+                          <TableCell key={mt} className="py-2 text-xs text-center">
                             <Badge variant="outline" className={`text-[10px] px-1.5 py-0.5 ${badgeClass}`}>
                               {item.quality_score.toFixed(0)}
                             </Badge>
-                            <div className="text-[9px] text-muted-foreground mt-0.5">
+                            <div className="text-[10px] text-muted-foreground mt-0.5">
                               {getQualityStatusText(item.quality_status)}
                             </div>
                           </TableCell>
@@ -3647,12 +3647,12 @@ function DataQualityMatrixTab() {
                               return (
                                 <div key={mt} className="rounded-md border bg-card p-2 space-y-1">
                                   <div className="flex items-center justify-between">
-                                    <span className="text-[11px] font-medium">{METRIC_LABELS[mt] || mt}</span>
-                                    <Badge variant="outline" className={`text-[9px] px-1 py-0 ${getQualityBadgeClass(item.quality_score)}`}>
+                                    <span className="text-xs font-medium">{METRIC_LABELS[mt] || mt}</span>
+                                    <Badge variant="outline" className={`text-[10px] px-1 py-0 ${getQualityBadgeClass(item.quality_score)}`}>
                                       {item.quality_score.toFixed(0)} · {getQualityStatusText(item.quality_status)}
                                     </Badge>
                                   </div>
-                                  <div className="grid grid-cols-5 gap-1 text-[9px] text-center">
+                                  <div className="grid grid-cols-5 gap-1 text-[10px] text-center">
                                     <div>
                                       <div className="text-muted-foreground/70">新鲜度</div>
                                       <div className="font-mono">{item.freshness_score.toFixed(0)}</div>
@@ -3675,10 +3675,10 @@ function DataQualityMatrixTab() {
                                     </div>
                                   </div>
                                   <div className="flex items-center gap-1.5 pt-0.5">
-                                    <Badge variant="outline" className={`text-[9px] px-1 py-0 ${item.can_use_for_rule ? 'text-emerald-700 bg-emerald-50 border-emerald-300' : 'text-red-700 bg-red-50 border-red-300'}`}>
+                                    <Badge variant="outline" className={`text-[10px] px-1 py-0 ${item.can_use_for_rule ? 'text-emerald-700 bg-emerald-50 border-emerald-300' : 'text-red-700 bg-red-50 border-red-300'}`}>
                                       {item.can_use_for_rule ? '可用于规则' : '不可用于规则'}
                                     </Badge>
-                                    <Badge variant="outline" className={`text-[9px] px-1 py-0 ${item.can_use_for_strong_rule ? 'text-emerald-700 bg-emerald-50 border-emerald-300' : 'text-amber-700 bg-amber-50 border-amber-300'}`}>
+                                    <Badge variant="outline" className={`text-[10px] px-1 py-0 ${item.can_use_for_strong_rule ? 'text-emerald-700 bg-emerald-50 border-emerald-300' : 'text-amber-700 bg-amber-50 border-amber-300'}`}>
                                       {item.can_use_for_strong_rule ? '可用于强规则' : '不可用于强规则'}
                                     </Badge>
                                   </div>
@@ -3758,7 +3758,7 @@ function DataQualityConfigSection() {
             <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-400 bg-emerald-100">
               ✓ 保守策略（默认）
             </Badge>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               不自动买入、不自动再平衡，提示人工确认
             </span>
           </div>
@@ -3771,7 +3771,7 @@ function DataQualityConfigSection() {
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5 text-xs font-medium">
             <span>样本天数阈值</span>
-            <Badge variant="outline" className="text-[9px] px-1 py-0 text-muted-foreground">策略书§3.2</Badge>
+            <Badge variant="outline" className="text-[10px] px-1 py-0 text-muted-foreground">策略书§3.2</Badge>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
             {sampleDayThresholds.map((t) => (
@@ -3787,23 +3787,23 @@ function DataQualityConfigSection() {
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5 text-xs font-medium">
             <span>缓存过期阈值</span>
-            <Badge variant="outline" className="text-[9px] px-1 py-0 text-muted-foreground">策略书§5.4</Badge>
+            <Badge variant="outline" className="text-[10px] px-1 py-0 text-muted-foreground">策略书§5.4</Badge>
           </div>
           <div className="rounded-md border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="h-7 text-[11px]">数据类型</TableHead>
-                  <TableHead className="h-7 text-[11px] text-center w-[100px]">🔴 标红</TableHead>
-                  <TableHead className="h-7 text-[11px] text-center w-[100px]">🟡 标黄</TableHead>
+                  <TableHead className="h-7 text-xs">数据类型</TableHead>
+                  <TableHead className="h-7 text-xs text-center w-[100px]">🔴 标红</TableHead>
+                  <TableHead className="h-7 text-xs text-center w-[100px]">🟡 标黄</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {staleThresholds.map((t) => (
                   <TableRow key={t.label}>
-                    <TableCell className="py-1 text-[11px]">{t.label}</TableCell>
-                    <TableCell className="py-1 text-[11px] text-center font-mono text-red-600">{t.red}</TableCell>
-                    <TableCell className="py-1 text-[11px] text-center font-mono text-amber-600">{t.yellow}</TableCell>
+                    <TableCell className="py-1 text-xs">{t.label}</TableCell>
+                    <TableCell className="py-1 text-xs text-center font-mono text-red-600">{t.red}</TableCell>
+                    <TableCell className="py-1 text-xs text-center font-mono text-amber-600">{t.yellow}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -3815,21 +3815,21 @@ function DataQualityConfigSection() {
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5 text-xs font-medium">
             <span>异常值过滤阈值</span>
-            <Badge variant="outline" className="text-[9px] px-1 py-0 text-muted-foreground">策略书§5.2</Badge>
+            <Badge variant="outline" className="text-[10px] px-1 py-0 text-muted-foreground">策略书§5.2</Badge>
           </div>
           <div className="rounded-md border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="h-7 text-[11px]">指标</TableHead>
-                  <TableHead className="h-7 text-[11px] text-right">异常范围</TableHead>
+                  <TableHead className="h-7 text-xs">指标</TableHead>
+                  <TableHead className="h-7 text-xs text-right">异常范围</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {outlierThresholds.map((t) => (
                   <TableRow key={t.label}>
-                    <TableCell className="py-1 text-[11px]">{t.label}</TableCell>
-                    <TableCell className="py-1 text-[11px] text-right font-mono text-red-600">{t.range}</TableCell>
+                    <TableCell className="py-1 text-xs">{t.label}</TableCell>
+                    <TableCell className="py-1 text-xs text-right font-mono text-red-600">{t.range}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -3985,7 +3985,7 @@ function CashPoolConfigSection({ configs }: { configs: SystemConfig[] }) {
                 />
                 <span className="text-xs text-amber-700">%</span>
               </div>
-              <div className="text-[9px] text-muted-foreground mt-1">华宝添益占总资产 &gt; {localWarning}% 提醒</div>
+              <div className="text-[10px] text-muted-foreground mt-1">华宝添益占总资产 &gt; {localWarning}% 提醒</div>
             </div>
             <div className="rounded-md border border-red-200 bg-red-50/40 p-2.5">
               <div className="text-[10px] text-red-700 mb-1">强提醒阈值</div>
@@ -4000,7 +4000,7 @@ function CashPoolConfigSection({ configs }: { configs: SystemConfig[] }) {
                 />
                 <span className="text-xs text-red-700">%</span>
               </div>
-              <div className="text-[9px] text-muted-foreground mt-1">&gt; {localStrong}% 强提醒可能现金拖累</div>
+              <div className="text-[10px] text-muted-foreground mt-1">&gt; {localStrong}% 强提醒可能现金拖累</div>
             </div>
           </div>
         </div>
@@ -4348,31 +4348,31 @@ export default function SettingsTab() {
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-4xl mx-auto">
       <SettingsSectionNav />
-      <div id="section-target" className="scroll-mt-20">
+      <div id="section-target" className="scroll-mt-32">
         <TargetAllocationSection configs={etfConfigs} />
       </div>
-      <div id="section-budget" className="scroll-mt-20">
+      <div id="section-budget" className="scroll-mt-32">
         <WeeklyBudgetSection configs={systemConfigs} />
       </div>
-      <div id="section-rules" className="scroll-mt-20">
+      <div id="section-rules" className="scroll-mt-32">
         <RuleManagementSection rules={rules} etfMap={etfMap} />
       </div>
-      <div id="section-blacklist" className="scroll-mt-20">
+      <div id="section-blacklist" className="scroll-mt-32">
         <BlacklistSection configs={etfConfigs} />
       </div>
-      <div id="section-datasource" className="scroll-mt-20">
+      <div id="section-datasource" className="scroll-mt-32">
         <DataSourceSection />
       </div>
-      <div id="section-quality" className="scroll-mt-20">
+      <div id="section-quality" className="scroll-mt-32">
         <DataQualityConfigSection />
       </div>
-      <div id="section-cashpool" className="scroll-mt-20">
+      <div id="section-cashpool" className="scroll-mt-32">
         <CashPoolConfigSection configs={systemConfigs} />
       </div>
-      <div id="section-notify" className="scroll-mt-20">
+      <div id="section-notify" className="scroll-mt-32">
         <NotifyConfigSection configs={systemConfigs} />
       </div>
-      <div id="section-admin" className="scroll-mt-20">
+      <div id="section-admin" className="scroll-mt-32">
         <AdminSection />
       </div>
     </div>
@@ -4401,7 +4401,7 @@ function SettingsSectionNav() {
     }
   }
   return (
-    <div className="sticky top-0 z-30 -mx-4 sm:-mx-6 px-4 sm:px-6 py-2 bg-background/80 backdrop-blur border-b">
+    <div className="sticky top-14 z-40 -mx-4 sm:-mx-6 px-4 sm:px-6 py-2 bg-background/95 backdrop-blur border-b shadow-sm">
       <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
         {SETTINGS_SECTION_DEFS.map((s) => (
           <Button
@@ -4409,7 +4409,7 @@ function SettingsSectionNav() {
             type="button"
             variant="ghost"
             size="sm"
-            className="shrink-0 h-8 px-3 text-xs text-muted-foreground hover:text-foreground"
+            className="shrink-0 h-8 px-3 text-xs text-muted-foreground hover:text-foreground pointer-events-auto"
             onClick={() => handleJump(s.id)}
           >
             {s.label}
@@ -4482,7 +4482,7 @@ function AdminSection() {
         toast.error(data.error || '清空失败')
       }
     },
-    onError: () => toast.error('清空请求失败'),
+    onError: (err: Error) => toast.error(err.message || '清空请求失败，数据服务可能未启动'),
   })
 
   // 一键清空所有市场缓存
@@ -4500,7 +4500,7 @@ function AdminSection() {
         toast.error('清空缓存失败')
       }
     },
-    onError: () => toast.error('清空缓存请求失败'),
+    onError: (err: Error) => toast.error(err.message || '清空缓存请求失败，数据服务可能未启动'),
   })
 
   // 重新计算质量评分(复用 P5-C API)
@@ -4513,7 +4513,7 @@ function AdminSection() {
         toast.error('质量评分重算失败')
       }
     },
-    onError: () => toast.error('质量评分重算请求失败'),
+    onError: (err: Error) => toast.error(err.message || '质量评分重算请求失败，数据服务可能未启动'),
   })
 
   // 导出业务数据为 JSON 文件
@@ -4765,7 +4765,7 @@ function AdminSection() {
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               </div>
             ) : serviceStatus ? (
-              <pre className="text-[11px] font-mono whitespace-pre-wrap break-all leading-relaxed">
+              <pre className="text-xs font-mono whitespace-pre-wrap break-all leading-relaxed">
                 {JSON.stringify(serviceStatus, null, 2)}
               </pre>
             ) : (
@@ -4882,13 +4882,13 @@ function DbTableCard({
                   >
                     {t.rows.toLocaleString()} 行
                   </Badge>
-                  <span className="text-[9px] text-muted-foreground shrink-0 hidden sm:inline w-[140px] text-right tabular-nums">
+                  <span className="text-[10px] text-muted-foreground shrink-0 hidden sm:inline w-[140px] text-right tabular-nums">
                     {formatLastUpdate(t.last_update)}
                   </span>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-6 px-2 text-[11px] shrink-0"
+                    className="h-6 px-2 text-xs shrink-0"
                     onClick={() => onView(t.name)}
                   >
                     <Eye className="h-3 w-3 mr-0.5" />
@@ -4898,7 +4898,7 @@ function DbTableCard({
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-6 px-2 text-[11px] text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0"
+                      className="h-6 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0"
                       onClick={() => onClear(t.name)}
                       disabled={clearPending}
                     >

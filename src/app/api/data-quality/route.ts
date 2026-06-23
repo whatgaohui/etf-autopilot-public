@@ -10,7 +10,7 @@ export async function POST() {
     const isUp = await ensureDataServiceRunning();
     if (!isUp) {
       return NextResponse.json(
-        { success: false, error: 'data-service unavailable' },
+        { success: false, error: '数据服务未启动，请在设置页后台管理查看服务状态，或运行 ./start.sh 启动' },
         { status: 503 }
       );
     }
