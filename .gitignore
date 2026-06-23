@@ -92,3 +92,8 @@ venv/
 /v42-shots/
 /e2-shots/
 /screenshots/
+
+# V4.2 P6 部署产物
+/backup/
+/v42-shots/
+/agent-ctx/

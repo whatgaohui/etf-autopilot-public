@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import DB_DIR, DB_PATH, SERVICE_HOST, SERVICE_PORT
-from routers import cached, calculate, data_quality, data_source, health, macro, refresh
+from routers import admin, cached, calculate, data_quality, data_source, health, macro, refresh
 from scheduler.jobs import setup_scheduler
 
 # Configure logging
@@ -299,6 +299,7 @@ app.include_router(calculate.router)
 app.include_router(data_source.router)
 app.include_router(data_quality.router)
 app.include_router(macro.router)
+app.include_router(admin.router)
 
 
 if __name__ == "__main__":

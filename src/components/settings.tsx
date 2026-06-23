@@ -37,6 +37,10 @@ import {
   Layers,
   ListChecks,
   ExternalLink,
+  Download,
+  Server,
+  Eye,
+  HardDrive,
 } from 'lucide-react'
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -126,6 +130,16 @@ import {
   refreshMarketData as refreshMarketDataApi,
   refreshMacro,
   recomputeQuality,
+  // V4.2 P6: 后台管理
+  getDbStats,
+  getTableData,
+  clearTable,
+  resetCache,
+  exportBusinessData,
+  getServiceStatus,
+  type DbStats,
+  type DbTableInfo,
+  type TableData,
   type FieldSourceConfig,
   type CrossCheckRecord,
   type CrossCheckStats,
@@ -4358,6 +4372,9 @@ export default function SettingsTab() {
       <div id="section-notify" className="scroll-mt-20">
         <NotifyConfigSection configs={systemConfigs} />
       </div>
+      <div id="section-admin" className="scroll-mt-20">
+        <AdminSection />
+      </div>
     </div>
   )
 }
@@ -4373,6 +4390,7 @@ const SETTINGS_SECTION_DEFS: Array<{ id: string; label: string }> = [
   { id: 'section-quality', label: '数据质量' },
   { id: 'section-cashpool', label: '现金水池' },
   { id: 'section-notify', label: '通知' },
+  { id: 'section-admin', label: '后台管理' },
 ]
 
 function SettingsSectionNav() {
@@ -4401,3 +4419,500 @@ function SettingsSectionNav() {
     </div>
   )
 }
+
+// ─── V4.2 P6-C: Admin Section — 后台管理面板 ────────────────────────────────
+// 双库表行数可视化 + 表数据查看 + 危险操作(清空缓存)二次确认 + 业务数据导出 + 服务状态
+
+const ADMIN_SAFE_CLEAR_TABLES = new Set([
+  'market_data_cache',
+  'market_data_raw',
+  'market_data_clean',
+  'data_quality_result',
+  'source_compare_result',
+  'cross_check_log',
+  'data_fetch_log',
+  'macro_metric_cache',
+  'macro_prompt_log',
+])
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return '0 B'
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  return `${(kb / 1024).toFixed(2)} MB`
+}
+
+function formatLastUpdate(s: string): string {
+  if (!s) return '—'
+  // 截断到秒, 太长截短
+  const trimmed = s.length > 19 ? s.slice(0, 19) : s
+  return trimmed.replace('T', ' ')
+}
+
+function AdminSection() {
+  const queryClient = useQueryClient()
+  const [tableDialog, setTableDialog] = useState<{ db: string; table: string } | null>(null)
+  const [statusDialogOpen, setStatusDialogOpen] = useState(false)
+  const [resetDialogOpen, setResetDialogOpen] = useState(false)
+  const [serviceStatus, setServiceStatus] = useState<Record<string, unknown> | null>(null)
+  const [statusLoading, setStatusLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
+
+  // 拉取双库表统计
+  const { data: dbStats, isLoading, refetch } = useQuery<DbStats>({
+    queryKey: ['admin-db-stats'],
+    queryFn: getDbStats,
+  })
+
+  // 查看表数据
+  const { data: tableData, isLoading: tableLoading } = useQuery<TableData>({
+    queryKey: ['admin-table-data', tableDialog?.db, tableDialog?.table],
+    queryFn: () => getTableData(tableDialog!.db, tableDialog!.table, 100),
+    enabled: !!tableDialog,
+  })
+
+  // 清空单表
+  const clearTableMutation = useMutation({
+    mutationFn: ({ db, table }: { db: string; table: string }) => clearTable(db, table),
+    onSuccess: (data) => {
+      if (data.success) {
+        toast.success(`已清空 ${data.table || ''}，删除 ${data.deleted_rows ?? 0} 行`)
+        queryClient.invalidateQueries({ queryKey: ['admin-db-stats'] })
+      } else {
+        toast.error(data.error || '清空失败')
+      }
+    },
+    onError: () => toast.error('清空请求失败'),
+  })
+
+  // 一键清空所有市场缓存
+  const resetCacheMutation = useMutation({
+    mutationFn: () => resetCache(),
+    onSuccess: (data) => {
+      if (data.success) {
+        const totalDeleted = (data.cleared || []).reduce(
+          (sum, t) => sum + (t.deleted ?? 0),
+          0
+        )
+        toast.success(`已清空 ${data.cleared?.length ?? 0} 张表，共删除 ${totalDeleted} 行`)
+        queryClient.invalidateQueries({ queryKey: ['admin-db-stats'] })
+      } else {
+        toast.error('清空缓存失败')
+      }
+    },
+    onError: () => toast.error('清空缓存请求失败'),
+  })
+
+  // 重新计算质量评分(复用 P5-C API)
+  const recomputeMutation = useMutation({
+    mutationFn: () => recomputeQuality(),
+    onSuccess: (data) => {
+      if (data.success) {
+        toast.success(`质量评分已重算：${data.total_metrics} 指标，平均分 ${data.avg_score.toFixed(1)}`)
+      } else {
+        toast.error('质量评分重算失败')
+      }
+    },
+    onError: () => toast.error('质量评分重算请求失败'),
+  })
+
+  // 导出业务数据为 JSON 文件
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const result = await exportBusinessData()
+      const blob = new Blob([JSON.stringify(result, null, 2)], {
+        type: 'application/json',
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      a.download = `etf-business-backup-${ts}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      toast.success('业务数据已导出为 JSON 文件')
+    } catch {
+      toast.error('导出失败，请重试')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  // 查看服务状态
+  const handleViewStatus = async () => {
+    setStatusLoading(true)
+    setStatusDialogOpen(true)
+    try {
+      const data = await getServiceStatus()
+      setServiceStatus(data)
+    } catch {
+      setServiceStatus({ error: '获取服务状态失败' })
+    } finally {
+      setStatusLoading(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Server className="h-4 w-4 text-rose-600" />
+              后台管理
+            </CardTitle>
+            <CardDescription className="text-xs mt-1">
+              查看/维护两个数据库（业务库 + 市场库）。危险操作需二次确认，业务核心表禁止清空。
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={() => refetch()}
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5 mr-1" />
+            )}
+            刷新统计
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* 4 个操作按钮 */}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={() => recomputeMutation.mutate()}
+            disabled={recomputeMutation.isPending}
+          >
+            {recomputeMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
+              <Activity className="h-3.5 w-3.5 mr-1" />
+            )}
+            重新计算质量评分
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={handleExport}
+            disabled={exporting}
+          >
+            {exporting ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5 mr-1" />
+            )}
+            导出业务数据
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={handleViewStatus}
+          >
+            <Server className="h-3.5 w-3.5 mr-1" />
+            查看服务状态
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            className="h-8"
+            onClick={() => setResetDialogOpen(true)}
+            disabled={resetCacheMutation.isPending}
+          >
+            {resetCacheMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
+              <AlertTriangle className="h-3.5 w-3.5 mr-1" />
+            )}
+            清空市场缓存
+          </Button>
+        </div>
+
+        {/* 双库表统计 */}
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-32 w-full rounded-md" />
+            <Skeleton className="h-48 w-full rounded-md" />
+          </div>
+        ) : dbStats ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <DbTableCard
+              title="业务数据库"
+              subtitle="Prisma custom.db · 配置/持仓/规则/系统配置"
+              fileBytes={dbStats.business.file_size}
+              tables={dbStats.business.tables}
+              dbKey="business"
+              onView={(table) => setTableDialog({ db: 'business', table })}
+            />
+            <DbTableCard
+              title="市场数据库"
+              subtitle="market_data.db · 行情缓存/原始/清洗/质量/宏观"
+              fileBytes={dbStats.market.file_size}
+              tables={dbStats.market.tables}
+              dbKey="market"
+              onView={(table) => setTableDialog({ db: 'market', table })}
+              onClear={(table) => clearTableMutation.mutate({ db: 'market', table })}
+              clearPending={clearTableMutation.isPending}
+            />
+          </div>
+        ) : (
+          <div className="text-sm text-muted-foreground py-6 text-center">
+            暂无数据，点击「刷新统计」重试
+          </div>
+        )}
+      </CardContent>
+
+      {/* 表数据查看 Dialog */}
+      <Dialog
+        open={!!tableDialog}
+        onOpenChange={(open) => !open && setTableDialog(null)}
+      >
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Database className="h-4 w-4" />
+              {tableDialog?.db === 'business' ? '业务库' : '市场库'} · {tableDialog?.table}
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              展示前 100 行数据（只读）。完整数据请直接查询 SQLite 文件。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto max-h-[60vh] rounded-md border">
+            {tableLoading ? (
+              <div className="flex items-center justify-center h-32">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : tableData?.error ? (
+              <div className="p-4 text-sm text-red-600 dark:text-red-400">
+                加载失败：{tableData.error}
+              </div>
+            ) : tableData && tableData.rows.length > 0 ? (
+              <Table>
+                <TableHeader className="sticky top-0 bg-muted/95 backdrop-blur z-10">
+                  <TableRow>
+                    {tableData.columns.map((col) => (
+                      <TableHead key={col} className="text-xs whitespace-nowrap">
+                        {col}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tableData.rows.map((row, idx) => (
+                    <TableRow key={idx}>
+                      {tableData.columns.map((col) => {
+                        const v = (row as Record<string, unknown>)[col]
+                        const display =
+                          v === null || v === undefined
+                            ? '—'
+                            : typeof v === 'object'
+                              ? JSON.stringify(v).slice(0, 80) +
+                                (JSON.stringify(v).length > 80 ? '…' : '')
+                              : String(v)
+                        return (
+                          <TableCell
+                            key={col}
+                            className="text-xs whitespace-nowrap font-mono max-w-[260px] truncate"
+                            title={display}
+                          >
+                            {display}
+                          </TableCell>
+                        )
+                      })}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <div className="p-4 text-sm text-muted-foreground text-center">
+                表为空或无数据
+              </div>
+            )}
+          </div>
+          <DialogFooter className="text-xs text-muted-foreground">
+            共 {tableData?.count ?? 0} 行 · {tableData?.columns.length ?? 0} 列
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 服务状态 Dialog */}
+      <Dialog open={statusDialogOpen} onOpenChange={setStatusDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Server className="h-4 w-4" />
+              服务状态
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              data-service 进程信息 + 数据库大小 + 系统指标
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto max-h-[55vh] rounded-md border bg-muted/30 p-3">
+            {statusLoading ? (
+              <div className="flex items-center justify-center h-32">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : serviceStatus ? (
+              <pre className="text-[11px] font-mono whitespace-pre-wrap break-all leading-relaxed">
+                {JSON.stringify(serviceStatus, null, 2)}
+              </pre>
+            ) : (
+              <div className="text-sm text-muted-foreground">无数据</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 清空所有市场缓存 AlertDialog (危险操作二次确认) */}
+      <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-red-600" />
+              确认清空所有市场数据缓存？
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-xs space-y-2">
+              <span className="block">
+                此操作将清空以下 9 张市场表的所有数据，<b className="text-red-600">不可恢复</b>：
+              </span>
+              <span className="block font-mono text-[10px] leading-relaxed">
+                market_data_cache / market_data_raw / market_data_clean /
+                data_quality_result / source_compare_result / cross_check_log /
+                data_fetch_log / macro_metric_cache / macro_prompt_log
+              </span>
+              <span className="block">
+                业务库（etf_config / holding_snapshot / rule_config / system_config）<b>不受影响</b>。
+                清空后需要重新触发行情/宏观数据采集。
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resetCacheMutation.isPending}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              disabled={resetCacheMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault()
+                resetCacheMutation.mutate(undefined, {
+                  onSettled: () => setResetDialogOpen(false),
+                })
+              }}
+            >
+              {resetCacheMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-1" />
+              )}
+              确认清空
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Card>
+  )
+}
+
+// 双库表卡片
+function DbTableCard({
+  title,
+  subtitle,
+  fileBytes,
+  tables,
+  dbKey,
+  onView,
+  onClear,
+  clearPending,
+}: {
+  title: string
+  subtitle: string
+  fileBytes: number
+  tables: DbTableInfo[]
+  dbKey: 'business' | 'market'
+  onView: (table: string) => void
+  onClear?: (table: string) => void
+  clearPending?: boolean
+}) {
+  const totalRows = tables.reduce((sum, t) => sum + (t.rows > 0 ? t.rows : 0), 0)
+  return (
+    <div className="rounded-lg border bg-card overflow-hidden">
+      <div className="p-3 border-b bg-muted/30">
+        <div className="flex items-center gap-2">
+          <HardDrive className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-semibold">{title}</span>
+          <Badge variant="outline" className="text-[10px] ml-auto">
+            {formatBytes(fileBytes)}
+          </Badge>
+        </div>
+        <p className="text-[10px] text-muted-foreground mt-1">{subtitle}</p>
+        <div className="text-[10px] text-muted-foreground mt-1">
+          共 {tables.length} 张表 · {totalRows.toLocaleString()} 行
+        </div>
+      </div>
+      <div className="max-h-80 overflow-y-auto p-1.5">
+        {tables.length === 0 ? (
+          <div className="text-xs text-muted-foreground text-center py-6">无表</div>
+        ) : (
+          <ul className="space-y-1">
+            {tables.map((t) => {
+              const isClearable = dbKey === 'market' && ADMIN_SAFE_CLEAR_TABLES.has(t.name)
+              return (
+                <li
+                  key={t.name}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted/40 group"
+                >
+                  <Database className="h-3 w-3 text-muted-foreground shrink-0" />
+                  <span className="text-xs font-mono truncate flex-1 min-w-0" title={t.name}>
+                    {t.name}
+                  </span>
+                  <Badge
+                    variant="secondary"
+                    className="text-[10px] font-mono shrink-0 tabular-nums"
+                  >
+                    {t.rows.toLocaleString()} 行
+                  </Badge>
+                  <span className="text-[9px] text-muted-foreground shrink-0 hidden sm:inline w-[140px] text-right tabular-nums">
+                    {formatLastUpdate(t.last_update)}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-[11px] shrink-0"
+                    onClick={() => onView(t.name)}
+                  >
+                    <Eye className="h-3 w-3 mr-0.5" />
+                    查看
+                  </Button>
+                  {isClearable && onClear && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[11px] text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0"
+                      onClick={() => onClear(t.name)}
+                      disabled={clearPending}
+                    >
+                      <Trash2 className="h-3 w-3 mr-0.5" />
+                      清空
+                    </Button>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+

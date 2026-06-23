@@ -10,3 +10,5 @@ efinance>=0.5.8
 tushare>=1.4.0
 # V4.1 PRD§13.3 / S5-T11: Fernet 对称加密（数据源 Token 加密存储）
 cryptography>=42.0.0
+# V4.2 PRD§16: 后台管理 — 服务状态查询(进程内存/系统指标)
+psutil>=5.9.0

@@ -663,3 +663,62 @@ export async function recomputeQuality(): Promise<{
 }> {
   return request('/data-quality', { method: 'POST' });
 }
+
+// ─── V4.2 P6 后台管理 ───────────────────────────────────────────────────
+export interface DbTableInfo {
+  name: string;
+  rows: number;
+  last_update: string;
+}
+export interface DbStats {
+  business: { tables: DbTableInfo[]; file_size: number };
+  market: { tables: DbTableInfo[]; file_size: number };
+}
+export interface TableData {
+  table: string;
+  columns: string[];
+  rows: Record<string, unknown>[];
+  count: number;
+  error?: string;
+}
+
+export async function getDbStats(): Promise<DbStats> {
+  return request<DbStats>('/admin?type=db-stats');
+}
+export async function getTableData(
+  db: string,
+  table: string,
+  limit = 100
+): Promise<TableData> {
+  return request<TableData>(
+    `/admin?type=table-data&db=${encodeURIComponent(db)}&table=${encodeURIComponent(table)}&limit=${limit}`
+  );
+}
+export async function clearTable(
+  db: string,
+  table: string
+): Promise<{ success: boolean; table?: string; deleted_rows?: number; error?: string }> {
+  return request('/admin', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'clear-table', db, table, confirm: true }),
+  });
+}
+export async function resetCache(): Promise<{
+  success: boolean;
+  cleared: Array<{ table: string; deleted?: number; error?: string }>;
+}> {
+  return request('/admin', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'reset-cache' }),
+  });
+}
+export async function exportBusinessData(): Promise<{
+  data: Record<string, unknown>;
+  exported_at: string;
+}> {
+  return request('/admin?type=export-business');
+}
+export async function getServiceStatus(): Promise<Record<string, unknown>> {
+  return request('/admin?type=service-status');
+}
+
