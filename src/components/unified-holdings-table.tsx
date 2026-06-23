@@ -1086,23 +1086,21 @@ export function UnifiedHoldingsTable({
 
           {/* The unified table - horizontally scrollable on small screens */}
           <div className="overflow-x-auto">
-            <Table className="min-w-[1140px]">
+            <Table className="min-w-[1280px]">
               <TableHeader>
                 <TableRow className="bg-muted/40 dark:bg-muted/20 hover:bg-muted/40 dark:hover:bg-muted/20 border-b border-border/60">
                   <TableHead className="w-[40px] text-center text-[11px] font-medium text-muted-foreground uppercase tracking-wide">展开</TableHead>
                   <TableHead className="w-[120px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">标的</TableHead>
                   <TableHead className="text-right w-[90px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">持仓市值</TableHead>
-                  <TableHead className="text-right w-[60px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">当前占比</TableHead>
-                  <TableHead className="text-right w-[60px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">目标占比</TableHead>
+                  <TableHead className="text-right w-[90px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">当前/目标占比</TableHead>
                   <TableHead className="text-right w-[60px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">偏离度</TableHead>
                   <TableHead className="text-center w-[55px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">PE分位</TableHead>
-                  <TableHead className="text-center w-[75px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">溢价率/7日均</TableHead>
-                  <TableHead className="text-center w-[55px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">股息率</TableHead>
+                  <TableHead className="text-center w-[90px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">溢价/股息</TableHead>
                   <TableHead className="text-center w-[65px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">配置状态</TableHead>
                   <TableHead className="text-center w-[70px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">资金桶</TableHead>
                   <TableHead className="text-center w-[70px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">软风控</TableHead>
                   <TableHead className="text-right w-[100px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">本周建议</TableHead>
-                  <TableHead className="w-[280px] max-w-[320px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">买入逻辑</TableHead>
+                  <TableHead className="w-[380px] max-w-[440px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">买入逻辑</TableHead>
                 </TableRow>
               </TableHeader>
               <motion.tbody
@@ -1164,13 +1162,16 @@ export function UnifiedHoldingsTable({
                         <TableCell className="text-right font-mono text-xs">
                           ¥{row.marketValue.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                         </TableCell>
-                        {/* 当前占比 */}
-                        <TableCell className={`text-right font-mono text-xs ${row.isInvestment ? 'font-medium' : 'text-muted-foreground'}`}>
-                          {row.isInvestment ? `${row.currentRatio.toFixed(1)}%` : '—'}
-                        </TableCell>
-                        {/* 目标占比 */}
+                        {/* 当前/目标占比合并列 */}
                         <TableCell className="text-right font-mono text-xs">
-                          {row.isInvestment ? `${row.targetRatio.toFixed(0)}%` : '—'}
+                          {row.isInvestment ? (
+                            <div className="flex flex-col items-end leading-tight">
+                              <span className="font-medium">{row.currentRatio.toFixed(1)}%</span>
+                              <span className="text-muted-foreground text-[10px]">目标 {row.targetRatio.toFixed(0)}%</span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         {/* 偏离度 */}
                         <TableCell
@@ -1206,7 +1207,7 @@ export function UnifiedHoldingsTable({
                             {row.pePercentile !== null && row.pePercentile !== undefined ? `${row.pePercentile.toFixed(0)}%` : '—'}
                           </span>
                         </TableCell>
-                        {/* 溢价率 / 7日均 */}
+                        {/* 溢价率/股息率合并列: QDII显示溢价+7日均, 红利显示股息率, 其他显示— */}
                         <TableCell className="text-center">
                           {isOverseas ? (
                             <div className="flex flex-col items-center gap-0.5">
@@ -1228,24 +1229,21 @@ export function UnifiedHoldingsTable({
                                 7日均 {formatPercent(row.premium7dAvg, 2)}
                               </span>
                             </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                        {/* 股息率 */}
-                        <TableCell className="text-center">
-                          {row.etfCode === '510880' && row.dividendYield !== null && row.dividendYield !== undefined ? (
-                            <span
-                              className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium font-mono ${
-                                row.dividendYield > 4
-                                  ? 'bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400'
-                                  : row.dividendYield > 3
-                                  ? 'bg-amber-50/70 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400'
-                                  : 'bg-red-50/70 dark:bg-red-950/30 text-red-600 dark:text-red-400'
-                              }`}
-                            >
-                              {row.dividendYield.toFixed(2)}%
-                            </span>
+                          ) : row.etfCode === '510880' && row.dividendYield !== null && row.dividendYield !== undefined ? (
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span
+                                className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium font-mono ${
+                                  row.dividendYield > 4
+                                    ? 'bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400'
+                                    : row.dividendYield > 3
+                                    ? 'bg-amber-50/70 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400'
+                                    : 'bg-red-50/70 dark:bg-red-950/30 text-red-600 dark:text-red-400'
+                                }`}
+                              >
+                                {row.dividendYield.toFixed(2)}%
+                              </span>
+                              <span className="text-[10px] text-muted-foreground">股息率</span>
+                            </div>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
@@ -1346,8 +1344,8 @@ export function UnifiedHoldingsTable({
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </TableCell>
-                        {/* 买入逻辑 - controlled width with word wrap (preserved from 10-a) */}
-                        <TableCell className="text-[11px] text-muted-foreground max-w-[220px]">
+                        {/* 买入逻辑 - 放宽列宽 V4.2 P7 */}
+                        <TableCell className="text-xs text-muted-foreground max-w-[380px]">
                           {row.adviceLogic ? (
                             <div
                               className="cursor-pointer break-words whitespace-normal"
@@ -1362,7 +1360,7 @@ export function UnifiedHoldingsTable({
                                 setExpandedLogic(next);
                               }}
                             >
-                              <div className={expandedLogic.has(row.etfCode) ? 'whitespace-pre-wrap' : 'line-clamp-3'}>
+                              <div className={expandedLogic.has(row.etfCode) ? 'whitespace-pre-wrap' : 'line-clamp-4'}>
                                 {row.adviceLogic}
                               </div>
                               <span className="text-[10px] text-primary hover:underline mt-1 inline-block">
@@ -1386,7 +1384,7 @@ export function UnifiedHoldingsTable({
                             transition={{ duration: 0.3, ease: EASE }}
                             className="bg-muted/10 dark:bg-muted/5"
                           >
-                            <TableCell colSpan={15} className="p-0">
+                            <TableCell colSpan={12} className="p-0">
                               <CalculationDetailPanel
                                 row={row}
                                 advice={advice}
