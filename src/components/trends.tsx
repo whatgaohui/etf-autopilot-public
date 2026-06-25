@@ -1135,8 +1135,8 @@ function KlineChart({
         ) : (
           <div className="space-y-0">
             {/* Candlestick + MA chart */}
-            <div className="h-72">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%" minWidth={300}>
                 <ComposedChart
                   data={chartData}
                   margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
@@ -1216,8 +1216,8 @@ function KlineChart({
               </ResponsiveContainer>
             </div>
             {/* Volume chart */}
-            <div className="h-20">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="h-20 w-full">
+              <ResponsiveContainer width="100%" height="100%" minWidth={300}>
                 <ComposedChart
                   data={chartData}
                   margin={{ top: 0, right: 10, left: 0, bottom: 5 }}
@@ -1410,8 +1410,8 @@ function ValuationChart({
             <span>当前历史数据不足，暂不展示此图表。</span>
           </div>
         ) : (
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="100%" height="100%" minWidth={300}>
               <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                 {/* Valuation zones */}
                 <ReferenceArea
@@ -1592,8 +1592,8 @@ function PremiumTrendChart({
             <span>当前历史数据不足，暂不展示此图表。</span>
           </div>
         ) : (
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-48 w-full">
+            <ResponsiveContainer width="100%" height="100%" minWidth={300}>
               <ComposedChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                 <defs>
                   <linearGradient id="premiumGradient" x1="0" y1="0" x2="0" y2="1">
@@ -1687,8 +1687,8 @@ function MarketIndexCard({ data }: { data: MarketIndexData }) {
         </div>
         {/* Mini sparkline */}
         {sparklineData.length > 1 && (
-          <div className="h-[40px]">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-[40px] w-full">
+            <ResponsiveContainer width="100%" height="100%" minWidth={300}>
               <LineChart data={sparklineData} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
                 <Line
                   type="monotone"
@@ -2491,8 +2491,8 @@ function QdiiPremiumEmphasisPanel({
             <span>当前历史数据不足，暂不展示此图表。</span>
           </div>
         ) : (
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-56 w-full">
+            <ResponsiveContainer width="100%" height="100%" minWidth={300}>
               <ComposedChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                 <defs>
                   <linearGradient id="qdiiPremiumGradient" x1="0" y1="0" x2="0" y2="1">
