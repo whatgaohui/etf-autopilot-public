@@ -207,7 +207,7 @@ export async function POST() {
             weeklyBudget,
             marketData,
           }),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(60000),
         }
       );
 

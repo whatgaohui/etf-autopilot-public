@@ -144,9 +144,17 @@ export async function refreshMarketData(): Promise<RefreshResponse> {
 
 // Advice
 export async function generateAdvice(): Promise<AdviceResponse> {
-  return request<AdviceResponse>('/advice', {
+  // V5.0: advice 需要调规则引擎+LLM,最长120秒
+  const res = await fetch(`${BASE_URL}/advice`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(120000),
   });
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({ error: '生成建议失败' }));
+    throw new Error((errorBody as { error?: string }).error || `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<AdviceResponse>;
 }
 
 // V4 Data Source (PRD§9.3)

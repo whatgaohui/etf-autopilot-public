@@ -66,12 +66,12 @@ export function Overview() {
     queryFn: () => getMarketData('summary'),
   });
 
-  // V4.1 S4-T2/S4-T4: 数据质量摘要（60s 自动刷新，用于 DataTrustCard + 异常阻断 Alert）
+  // V4.1 S4-T2/S4-T4: 数据质量摘要（30s 自动刷新，用于 DataTrustCard + 异常阻断 Alert）
   const qualitySummaryQuery = useQuery({
     queryKey: ['quality-summary'],
     queryFn: getQualitySummary,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: 30_000,
+    staleTime: 5_000,
   });
   const qualitySummary = qualitySummaryQuery.data ?? null;
   // V4.1 S4-T4: 质量分 < 60 或 allow_buy_suggestion=false 时阻断
