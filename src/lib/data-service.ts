@@ -5,8 +5,9 @@ import path from 'path';
 
 const PYTHON_SERVICE_HOST = '127.0.0.1';
 const PYTHON_SERVICE_PORT = 3031;
-const SERVICE_DIR = path.join(process.cwd(), 'mini-services', 'data-service');
-const LOG_FILE = '/var/log/data-service.log';
+// V5.0: 用绝对路径避免 process.cwd() 不确定导致 spawn 失败
+const SERVICE_DIR = '/home/z/my-project/mini-services/data-service';
+const LOG_FILE = '/tmp/data-service-spawn.log';
 
 let startupPromise: Promise<boolean> | null = null;
 
@@ -44,22 +45,29 @@ export function isDataServiceRunning(timeoutMs = 1500): Promise<boolean> {
 function spawnDataService(): void {
   // V4.2: 优先用 venv python(有akshare等依赖), 回退到系统 python3
   const pythonBin = existsSync('/home/z/.venv/bin/python3') ? '/home/z/.venv/bin/python3' : 'python3';
-  const child = spawn(
-    pythonBin,
-    ['-u', '-c', 'import uvicorn; uvicorn.run("main:app", host="0.0.0.0", port=3031, reload=False, log_level="info")'],
-    {
-      cwd: SERVICE_DIR,
-      detached: true,
-      stdio: ['ignore', 'ignore', 'ignore'],
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-    }
-  );
-  child.unref();
-  // Write a marker so we can trace (best-effort, non-blocking)
   try {
-    appendFileSync(LOG_FILE, `\n[spawn] data-service PID ${child.pid} at ${new Date().toISOString()}\n`);
-  } catch {
-    // ignore
+    const child = spawn(
+      pythonBin,
+      ['-u', '-c', 'import uvicorn; uvicorn.run("main:app", host="0.0.0.0", port=3031, reload=False, log_level="info")'],
+      {
+        cwd: SERVICE_DIR,
+        detached: true,
+        stdio: ['ignore', 'ignore', 'ignore'],
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      }
+    );
+    child.unref();
+    child.on('error', (err) => {
+      try { appendFileSync(LOG_FILE, `\n[spawn-error] ${err.message} at ${new Date().toISOString()}\n`); } catch {}
+    });
+    // Write a marker so we can trace (best-effort, non-blocking)
+    try {
+      appendFileSync(LOG_FILE, `\n[spawn] data-service PID ${child.pid} bin=${pythonBin} cwd=${SERVICE_DIR} at ${new Date().toISOString()}\n`);
+    } catch {
+      // ignore
+    }
+  } catch (e) {
+    try { appendFileSync(LOG_FILE, `\n[spawn-exception] ${e} at ${new Date().toISOString()}\n`); } catch {}
   }
 }
 
@@ -82,7 +90,7 @@ export async function ensureDataServiceRunning(): Promise<boolean> {
   startupPromise = (async () => {
     spawnDataService();
     // Poll until reachable or timeout
-    const deadline = Date.now() + 20000;
+    const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 800));
       if (await isDataServiceRunning()) return true;
