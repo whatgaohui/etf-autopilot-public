@@ -14,6 +14,8 @@ import { RedLineAuditCard } from '@/components/red-line-audit-card';
 import { HistoryLogCard } from '@/components/history-log-card';
 import { DataTrustCard } from '@/components/data-trust-card';
 import { CashSubaccountFlowCard } from '@/components/cash-subaccount-flow-card';
+import { PortfolioPerformanceCard } from '@/components/portfolio-performance-card';
+import { ExecutionConfirmDialog } from '@/components/execution-confirm-dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
@@ -45,6 +47,7 @@ export function Overview() {
   const [advice, setAdvice] = useState<AdviceResponse | null>(null);
   const [isGeneratingAdvice, setIsGeneratingAdvice] = useState(false);
   const [generationStep, setGenerationStep] = useState(0);
+  const [executionDialogOpen, setExecutionDialogOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Queries
@@ -317,6 +320,9 @@ export function Overview() {
         onRefresh={() => qualitySummaryQuery.refetch()}
       />
 
+      {/* V5.0 投资收益追踪卡 — 数据可信度卡下方、结论卡上方 */}
+      <PortfolioPerformanceCard hasHoldings={hasHoldings} />
+
       {/* V4.2 PRD§11: 宏观温度计提示区 — 仅异常时显示, 在可信度卡与结论卡之间 */}
       {macroPromptsQuery.data?.has_alert && macroPromptsQuery.data.prompts.length > 0 && (
         <motion.div
@@ -383,6 +389,7 @@ export function Overview() {
             advice={advice}
             isGenerating={isGeneratingAdvice}
             onGenerateAdvice={handleGenerateAdvice}
+            onConfirmExecution={() => setExecutionDialogOpen(true)}
           />
         </FadeInUp>
       )}
@@ -418,6 +425,18 @@ export function Overview() {
       <FadeInUp delay={0.25}>
         <HistoryLogCard />
       </FadeInUp>
+
+      {/* V5.0 执行确认弹窗 — 仅当执行单(advice)已生成时可用 */}
+      <ExecutionConfirmDialog
+        open={executionDialogOpen}
+        onOpenChange={setExecutionDialogOpen}
+        calculationId={advice?.calculationId || ''}
+        suggestions={advice?.suggestions || []}
+        onConfirmed={() => {
+          // 确认后刷新收益追踪 + 持仓（实际执行可能影响持仓）
+          queryClient.invalidateQueries({ queryKey: ['portfolio-performance'] });
+        }}
+      />
     </div>
   );
 }

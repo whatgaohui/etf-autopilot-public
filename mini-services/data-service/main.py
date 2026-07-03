@@ -13,7 +13,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import DB_DIR, DB_PATH, SERVICE_HOST, SERVICE_PORT
-from routers import admin, cached, calculate, data_quality, data_source, health, macro, refresh
+from routers import (
+    admin,
+    backtest,
+    cached,
+    calculate,
+    data_quality,
+    data_source,
+    execution,
+    health,
+    macro,
+    portfolio,
+    refresh,
+)
 from scheduler.jobs import setup_scheduler
 
 # Configure logging
@@ -167,6 +179,27 @@ def _init_db():
 
         # V4.1 PRD §13.8: data_quality_result 表由 services/data_quality_score.py 管理（幂等建表）
 
+        # V5.0: execution_confirm 表 — 执行确认闭环 (计划 vs 实际买入)
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS execution_confirm (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                calculation_id TEXT NOT NULL,
+                etf_code TEXT NOT NULL,
+                planned_amount REAL NOT NULL,
+                actual_amount REAL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                confirmed_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(calculation_id, etf_code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_exec_confirm_calc_id
+                ON execution_confirm(calculation_id);
+            CREATE INDEX IF NOT EXISTS idx_exec_confirm_created
+                ON execution_confirm(created_at DESC);
+            """
+        )
+
         # V4.2 策略书§3.1/§15: 现金子账户表
         conn.executescript(
             """
@@ -300,6 +333,10 @@ app.include_router(data_source.router)
 app.include_router(data_quality.router)
 app.include_router(macro.router)
 app.include_router(admin.router)
+# V5.0 新增 routers
+app.include_router(backtest.router)
+app.include_router(execution.router)
+app.include_router(portfolio.router)
 
 
 if __name__ == "__main__":

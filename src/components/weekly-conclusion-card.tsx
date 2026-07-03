@@ -52,6 +52,8 @@ interface WeeklyConclusionCardProps {
   advice: AdviceResponse | null;
   isGenerating?: boolean;
   onGenerateAdvice?: () => void;
+  /** V5.0: 点击"确认执行"按钮时触发，由父组件打开执行确认弹窗 */
+  onConfirmExecution?: () => void;
 }
 
 // Extract a concise reason from a possibly long reasonSummary.
@@ -90,6 +92,7 @@ export function WeeklyConclusionCard({
   advice,
   isGenerating = false,
   onGenerateAdvice,
+  onConfirmExecution,
 }: WeeklyConclusionCardProps) {
   // No advice yet → muted placeholder with a small generate button.
   if (!advice) {
@@ -446,6 +449,20 @@ export function WeeklyConclusionCard({
                     <span className="text-[9px] text-muted-foreground/70 truncate">
                       {getShortReason(s.reasonSummary)}
                     </span>
+                    {onConfirmExecution && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-5 mt-1 px-1.5 text-[10px] self-end text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100/70 dark:hover:bg-emerald-900/40"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onConfirmExecution();
+                        }}
+                      >
+                        <CheckCircle2 className="h-3 w-3 mr-0.5" />
+                        确认执行
+                      </Button>
+                    )}
                   </StaggerItem>
                 ))}
               </motion.div>

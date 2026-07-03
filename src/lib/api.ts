@@ -722,3 +722,136 @@ export async function getServiceStatus(): Promise<Record<string, unknown>> {
   return request('/admin?type=service-status');
 }
 
+// ─── V5.0 回测验证 ───────────────────────────────────────────────────────────
+
+export interface BacktestEquityPoint {
+  date: string;
+  value: number;
+}
+
+export interface BacktestStrategyStats {
+  equityCurve: BacktestEquityPoint[];
+  annualReturn: number;
+  maxDrawdown: number;
+  totalReturn: number;
+}
+
+export interface BacktestStrategyFullStats extends BacktestStrategyStats {
+  sharpe: number;
+}
+
+export interface BacktestResult {
+  strategy: BacktestStrategyFullStats;
+  dca: BacktestStrategyStats;
+  buyhold: BacktestStrategyStats;
+  weeklyRecords: number;
+  startDate: string;
+  endDate: string;
+}
+
+export async function runBacktest(params: {
+  startDate: string;
+  initialCapital: number;
+  weeklyBudget: number;
+}): Promise<BacktestResult> {
+  return request<BacktestResult>('/backtest', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export interface BacktestHistoryItem {
+  calculationId: string;
+  startDate: string;
+  endDate: string;
+  initialCapital: number;
+  weeklyBudget: number;
+  weeklyRecords: number;
+  strategyAnnualReturn: number;
+  strategyMaxDrawdown: number;
+  dcaAnnualReturn: number;
+  buyholdAnnualReturn: number;
+  createdAt: string;
+}
+
+export async function getBacktestHistory(
+  limit = 20
+): Promise<{ history: BacktestHistoryItem[] }> {
+  return request<{ history: BacktestHistoryItem[] }>(
+    `/backtest?type=history&limit=${limit}`
+  );
+}
+
+// ─── V5.0 执行确认 ───────────────────────────────────────────────────────────
+
+export type ExecutionStatus = 'executed' | 'skipped' | 'partial';
+
+export interface ExecutionConfirmItem {
+  etfCode: string;
+  plannedAmount: number;
+  actualAmount: number;
+  status: ExecutionStatus;
+}
+
+export async function confirmExecution(
+  calculationId: string,
+  items: ExecutionConfirmItem[]
+): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>('/execution', {
+    method: 'POST',
+    body: JSON.stringify({ calculationId, items }),
+  });
+}
+
+export interface ExecutionHistoryItem {
+  calculationId: string;
+  date: string;
+  planned: number;
+  actual: number;
+  deviation: number;
+  items: Array<{
+    etfCode: string;
+    plannedAmount: number;
+    actualAmount: number;
+    status: ExecutionStatus;
+  }>;
+}
+
+export async function getExecutionHistory(
+  limit = 20
+): Promise<{ history: ExecutionHistoryItem[] }> {
+  return request<{ history: ExecutionHistoryItem[] }>(
+    `/execution?type=history&limit=${limit}`
+  );
+}
+
+// ─── V5.0 投资收益追踪 ───────────────────────────────────────────────────────
+
+export interface PortfolioPerformancePoint {
+  date: string;
+  invested: number;
+  value: number;
+  returnPct: number;
+}
+
+export interface PortfolioPerformance {
+  totalInvested: number;
+  totalValue: number;
+  totalReturn: number;
+  totalReturnPct: number;
+  annualReturn: number;
+  vsBenchmark: number;
+  history: PortfolioPerformancePoint[];
+}
+
+export async function getPortfolioPerformance(): Promise<PortfolioPerformance> {
+  return request<PortfolioPerformance>('/portfolio?type=performance');
+}
+
+export async function getPortfolioPerformanceHistory(): Promise<{
+  history: PortfolioPerformancePoint[];
+}> {
+  return request('/portfolio?type=history');
+}
+
+

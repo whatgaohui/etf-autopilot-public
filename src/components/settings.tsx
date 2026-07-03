@@ -41,6 +41,7 @@ import {
   Server,
   Eye,
   HardDrive,
+  LineChart,
 } from 'lucide-react'
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -149,7 +150,22 @@ import {
   type QualityScoreItem,
   type DataSourceStatus,
   type MacroMetricItem,
+  // V5.0 回测验证
+  runBacktest as runBacktestApi,
+  type BacktestResult,
 } from '@/lib/api'
+
+// V5.0 回测图表（Recharts）— 别名避免与 lucide-react LineChart 冲突
+import {
+  LineChart as RechartsLineChart,
+  Line as RechartsLine,
+  XAxis as RechartsXAxis,
+  YAxis as RechartsYAxis,
+  CartesianGrid as RechartsCartesianGrid,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer as RechartsResponsiveContainer,
+  Legend as RechartsLegend,
+} from 'recharts'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -4375,6 +4391,9 @@ export default function SettingsTab() {
       <div id="section-admin" className="scroll-mt-32">
         <AdminSection />
       </div>
+      <div id="section-backtest" className="scroll-mt-32">
+        <BacktestSection />
+      </div>
     </div>
   )
 }
@@ -4391,6 +4410,7 @@ const SETTINGS_SECTION_DEFS: Array<{ id: string; label: string }> = [
   { id: 'section-cashpool', label: '现金水池' },
   { id: 'section-notify', label: '通知' },
   { id: 'section-admin', label: '后台管理' },
+  { id: 'section-backtest', label: '回测验证' },
 ]
 
 function SettingsSectionNav() {
@@ -4913,6 +4933,394 @@ function DbTableCard({
         )}
       </div>
     </div>
+  )
+}
+
+// ─── V5.0 BacktestSection — 回测验证面板 ─────────────────────────────────────
+// 参数：起始日期 + 初始资金 + 每周预算 → 调 runBacktest API
+// 结果：对比表格（策略定投 vs 等额定投 vs 买入持有）+ 收益曲线（3 条线）
+// Loading：显示"回测进行中..."
+
+function formatBacktestYuan(v: number): string {
+  return `¥${Math.round(v).toLocaleString('zh-CN')}`
+}
+
+function formatBacktestPct(v: number): string {
+  const sign = v > 0 ? '+' : ''
+  return `${sign}${v.toFixed(2)}%`
+}
+
+function formatBacktestDate(iso: string): string {
+  if (!iso) return '—'
+  try {
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return iso
+    return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+  } catch {
+    return iso
+  }
+}
+
+function formatShortDateForChart(iso: string): string {
+  try {
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return iso
+    return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+  } catch {
+    return iso
+  }
+}
+
+function buildBacktestChartData(result: BacktestResult): Array<{
+  date: string
+  strategy: number
+  dca: number
+  buyhold: number
+}> {
+  const strat = result.strategy?.equityCurve || []
+  const dca = result.dca?.equityCurve || []
+  const bh = result.buyhold?.equityCurve || []
+  // 以策略曲线的日期为基准，按日期合并（同日取值；缺失则 undefined → null）
+  const dcaMap = new Map<string, number>()
+  dca.forEach((p) => dcaMap.set(p.date, p.value))
+  const bhMap = new Map<string, number>()
+  bh.forEach((p) => bhMap.set(p.date, p.value))
+  return strat.map((p) => ({
+    date: formatShortDateForChart(p.date),
+    strategy: Math.round(p.value),
+    dca: dcaMap.has(p.date) ? Math.round(dcaMap.get(p.date)!) : 0,
+    buyhold: bhMap.has(p.date) ? Math.round(bhMap.get(p.date)!) : 0,
+  }))
+}
+
+function BacktestSection() {
+  const today = new Date()
+  const defaultStart = new Date(today)
+  defaultStart.setFullYear(defaultStart.getFullYear() - 2)
+  const defaultStartStr = defaultStart.toISOString().split('T')[0]
+
+  const [startDate, setStartDate] = useState(defaultStartStr)
+  const [initialCapital, setInitialCapital] = useState('100000')
+  const [weeklyBudget, setWeeklyBudget] = useState('1000')
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<BacktestResult | null>(null)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  const handleRunBacktest = async () => {
+    setErrorMsg(null)
+    if (!startDate) {
+      setErrorMsg('请选择起始日期')
+      return
+    }
+    const capital = parseFloat(initialCapital)
+    const budget = parseFloat(weeklyBudget)
+    if (isNaN(capital) || capital <= 0) {
+      setErrorMsg('初始资金必须为正数')
+      return
+    }
+    if (isNaN(budget) || budget <= 0) {
+      setErrorMsg('每周预算必须为正数')
+      return
+    }
+
+    setRunning(true)
+    setResult(null)
+    try {
+      const data = await runBacktestApi({
+        startDate,
+        initialCapital: capital,
+        weeklyBudget: budget,
+      })
+      setResult(data)
+      toast.success('回测完成')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '回测失败'
+      setErrorMsg(msg)
+      toast.error(msg)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const chartData = result ? buildBacktestChartData(result) : []
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <LineChart className="h-4 w-4 text-violet-600" />
+              回测验证
+            </CardTitle>
+            <CardDescription className="text-xs mt-1">
+              对比策略定投 / 等额定投 / 买入持有的历史收益。回测基于市场缓存数据，结果仅供参考。
+            </CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* 参数输入 */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="backtest-start-date" className="text-xs">起始日期</Label>
+            <Input
+              id="backtest-start-date"
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              disabled={running}
+              className="h-9 text-sm"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="backtest-initial-capital" className="text-xs">初始资金（元）</Label>
+            <Input
+              id="backtest-initial-capital"
+              type="number"
+              min={0}
+              step="1000"
+              value={initialCapital}
+              onChange={(e) => setInitialCapital(e.target.value)}
+              disabled={running}
+              className="h-9 text-sm font-mono"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="backtest-weekly-budget" className="text-xs">每周预算（元）</Label>
+            <Input
+              id="backtest-weekly-budget"
+              type="number"
+              min={0}
+              step="100"
+              value={weeklyBudget}
+              onChange={(e) => setWeeklyBudget(e.target.value)}
+              disabled={running}
+              className="h-9 text-sm font-mono"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            onClick={handleRunBacktest}
+            disabled={running}
+          >
+            {running ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
+              <Zap className="h-3.5 w-3.5 mr-1" />
+            )}
+            {running ? '回测进行中...' : '运行回测'}
+          </Button>
+          {result && (
+            <Badge variant="outline" className="text-[11px] font-mono">
+              {result.weeklyRecords} 周记录 · {formatBacktestDate(result.startDate)} → {formatBacktestDate(result.endDate)}
+            </Badge>
+          )}
+        </div>
+
+        {/* 错误提示 */}
+        {errorMsg && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>回测失败</AlertTitle>
+            <AlertDescription className="text-xs">{errorMsg}</AlertDescription>
+          </Alert>
+        )}
+
+        {/* Loading 占位 */}
+        {running && !result && (
+          <div className="space-y-3">
+            <Skeleton className="h-32 w-full rounded-lg" />
+            <Skeleton className="h-64 w-full rounded-lg" />
+          </div>
+        )}
+
+        {/* 结果展示 */}
+        {result && !running && (
+          <div className="space-y-4">
+            {/* 对比表格 */}
+            <div className="rounded-md border overflow-hidden">
+              <Table>
+                <TableHeader className="bg-muted/60">
+                  <TableRow>
+                    <TableHead className="text-xs">策略</TableHead>
+                    <TableHead className="text-xs text-right">年化收益</TableHead>
+                    <TableHead className="text-xs text-right">最大回撤</TableHead>
+                    <TableHead className="text-xs text-right">总收益</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-2 rounded-full bg-violet-500" />
+                        策略定投
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right">
+                      <span className={result.strategy.annualReturn >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                        {formatBacktestPct(result.strategy.annualReturn)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right text-red-600 dark:text-red-400">
+                      {result.strategy.maxDrawdown.toFixed(2)}%
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right">
+                      <span className={result.strategy.totalReturn >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                        {formatBacktestPct(result.strategy.totalReturn)}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-2 rounded-full bg-amber-500" />
+                        等额定投
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right">
+                      <span className={result.dca.annualReturn >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                        {formatBacktestPct(result.dca.annualReturn)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right text-red-600 dark:text-red-400">
+                      {result.dca.maxDrawdown.toFixed(2)}%
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right">
+                      <span className={result.dca.totalReturn >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                        {formatBacktestPct(result.dca.totalReturn)}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-2 rounded-full bg-sky-500" />
+                        买入持有
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right">
+                      <span className={result.buyhold.annualReturn >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                        {formatBacktestPct(result.buyhold.annualReturn)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right text-red-600 dark:text-red-400">
+                      {result.buyhold.maxDrawdown.toFixed(2)}%
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-right">
+                      <span className={result.buyhold.totalReturn >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                        {formatBacktestPct(result.buyhold.totalReturn)}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
+
+            {/* 策略额外指标：夏普比率 */}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <Badge variant="outline" className="text-[11px]">
+                策略夏普比率 <span className="font-mono ml-1">{result.strategy.sharpe.toFixed(3)}</span>
+              </Badge>
+            </div>
+
+            {/* 收益曲线图 */}
+            {chartData.length > 0 ? (
+              <div className="h-72 w-full" style={{ minWidth: 300 }}>
+                <RechartsResponsiveContainer width="100%" height="100%">
+                  <RechartsLineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                    <RechartsCartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" opacity={0.5} />
+                    <RechartsXAxis
+                      dataKey="date"
+                      tick={{ fontSize: 10, fill: '#9ca3af' }}
+                      tickLine={false}
+                      axisLine={{ stroke: '#e5e7eb' }}
+                      interval="preserveStartEnd"
+                      minTickGap={24}
+                    />
+                    <RechartsYAxis
+                      tick={{ fontSize: 10, fill: '#9ca3af' }}
+                      tickLine={false}
+                      axisLine={{ stroke: '#e5e7eb' }}
+                      width={56}
+                      tickFormatter={(v: number) => `${(v / 10000).toFixed(1)}万`}
+                    />
+                    <RechartsTooltip
+                      contentStyle={{
+                        backgroundColor: 'rgba(255,255,255,0.96)',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+                      }}
+                      formatter={(value: number, name: string) => {
+                        const labelMap: Record<string, string> = {
+                          strategy: '策略定投',
+                          dca: '等额定投',
+                          buyhold: '买入持有',
+                        }
+                        return [formatBacktestYuan(value), labelMap[name] || name]
+                      }}
+                    />
+                    <RechartsLegend
+                      wrapperStyle={{ fontSize: 11 }}
+                      formatter={(value: string) => {
+                        const labelMap: Record<string, string> = {
+                          strategy: '策略定投',
+                          dca: '等额定投',
+                          buyhold: '买入持有',
+                        }
+                        return labelMap[value] || value
+                      }}
+                    />
+                    <RechartsLine
+                      type="monotone"
+                      dataKey="strategy"
+                      stroke="#8b5cf6"
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 3, fill: '#8b5cf6', stroke: '#fff', strokeWidth: 2 }}
+                    />
+                    <RechartsLine
+                      type="monotone"
+                      dataKey="dca"
+                      stroke="#f59e0b"
+                      strokeWidth={1.5}
+                      dot={false}
+                      activeDot={{ r: 3, fill: '#f59e0b', stroke: '#fff', strokeWidth: 2 }}
+                    />
+                    <RechartsLine
+                      type="monotone"
+                      dataKey="buyhold"
+                      stroke="#0ea5e9"
+                      strokeWidth={1.5}
+                      dot={false}
+                      activeDot={{ r: 3, fill: '#0ea5e9', stroke: '#fff', strokeWidth: 2 }}
+                    />
+                  </RechartsLineChart>
+                </RechartsResponsiveContainer>
+              </div>
+            ) : (
+              <div className="h-32 flex flex-col items-center justify-center text-muted-foreground text-sm gap-2">
+                <Info className="size-5 text-muted-foreground/60" />
+                <span>暂无收益曲线数据</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 初始空状态 */}
+        {!result && !running && !errorMsg && (
+          <div className="h-32 flex flex-col items-center justify-center text-muted-foreground text-sm gap-2">
+            <LineChart className="size-5 text-muted-foreground/60" />
+            <span>设置参数后点击「运行回测」</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
