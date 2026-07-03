@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { createConnection } from 'net';
-import { appendFileSync } from 'fs';
+import { appendFileSync, existsSync } from 'fs';
 import path from 'path';
 
 const PYTHON_SERVICE_HOST = '127.0.0.1';
@@ -42,8 +42,10 @@ export function isDataServiceRunning(timeoutMs = 1500): Promise<boolean> {
  * gets its own session and isn't killed when the parent exits.
  */
 function spawnDataService(): void {
+  // V4.2: 优先用 venv python(有akshare等依赖), 回退到系统 python3
+  const pythonBin = existsSync('/home/z/.venv/bin/python3') ? '/home/z/.venv/bin/python3' : 'python3';
   const child = spawn(
-    'python3',
+    pythonBin,
     ['-u', '-c', 'import uvicorn; uvicorn.run("main:app", host="0.0.0.0", port=3031, reload=False, log_level="info")'],
     {
       cwd: SERVICE_DIR,
