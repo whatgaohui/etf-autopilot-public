@@ -4,7 +4,7 @@
   "private": true,
   "description": "个人ETF自动化监控与资金调拨辅助系统 V4",
   "scripts": {
-    "dev": "next dev -p 3000 2>&1 | tee dev.log",
+    "dev": "bash scripts/dev-with-data.sh",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
