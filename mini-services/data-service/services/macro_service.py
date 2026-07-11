@@ -26,7 +26,34 @@ METRIC_US_10Y_TREASURY = "us_10y_treasury_yield"
 METRIC_USD_CNH = "usd_cnh"
 METRIC_VIX = "vix"
 
-ALL_MACRO_METRICS = [METRIC_CN_10Y_BOND, METRIC_US_10Y_TREASURY, METRIC_USD_CNH, METRIC_VIX]
+# V5.1 恐慌情绪指标体系新增(4个)
+METRIC_VVIX = "vvix"
+METRIC_SKEW = "skew"
+METRIC_50ETF_QVIX = "qvix_50etf"
+METRIC_300ETF_QVIX = "qvix_300etf"
+
+# 指标分类
+US_FEAR_METRICS = [METRIC_VIX, METRIC_VVIX, METRIC_SKEW]
+CN_SENTIMENT_METRICS = [METRIC_50ETF_QVIX, METRIC_300ETF_QVIX]
+ALL_FEAR_METRICS = US_FEAR_METRICS + CN_SENTIMENT_METRICS
+
+ALL_MACRO_METRICS = [METRIC_CN_10Y_BOND, METRIC_US_10Y_TREASURY, METRIC_USD_CNH, METRIC_VIX,
+                     METRIC_VVIX, METRIC_SKEW, METRIC_50ETF_QVIX, METRIC_300ETF_QVIX]
+
+# 指标元信息(含分类)
+MACRO_METRIC_META = {
+    # 原有4个(利率+汇率)归"宏观温度计"
+    METRIC_CN_10Y_BOND: {"name": "中国10年国债收益率", "unit": "%", "affects": "红利ETF、A股估值", "category": "macro_rate", "category_label": "利率与汇率", "direction": "up_negative"},
+    METRIC_US_10Y_TREASURY: {"name": "美国10年国债收益率", "unit": "%", "affects": "标普500、纳斯达克、科创50", "category": "macro_rate", "category_label": "利率与汇率", "direction": "up_negative"},
+    METRIC_USD_CNH: {"name": "USD/CNH离岸人民币", "unit": "", "affects": "A股宽基、QDII人民币收益", "category": "macro_rate", "category_label": "利率与汇率", "direction": "up_negative"},
+    # 美股恐慌
+    METRIC_VIX: {"name": "VIX恐慌指数", "unit": "", "affects": "全球风险偏好、现金水池战略价值", "category": "us_fear", "category_label": "美股恐慌指数", "direction": "up_negative"},
+    METRIC_VVIX: {"name": "VVIX(VIX波动率)", "unit": "", "affects": "恐慌加速度", "category": "us_fear", "category_label": "美股恐慌指数", "direction": "up_negative"},
+    METRIC_SKEW: {"name": "SKEW(尾部风险)", "unit": "", "affects": "黑天鹅担忧", "category": "us_fear", "category_label": "美股恐慌指数", "direction": "up_negative"},
+    # A股情绪
+    METRIC_50ETF_QVIX: {"name": "50ETF波指(QVIX)", "unit": "", "affects": "A股50ETF隐含波动率", "category": "cn_sentiment", "category_label": "A股情绪指标", "direction": "up_negative"},
+    METRIC_300ETF_QVIX: {"name": "300ETF波指(QVIX)", "unit": "", "affects": "沪深300隐含波动率", "category": "cn_sentiment", "category_label": "A股情绪指标", "direction": "up_negative"},
+}
 
 
 def _ensure_macro_tables(conn: sqlite3.Connection) -> None:
@@ -89,6 +116,12 @@ def _ensure_macro_tables(conn: sqlite3.Connection) -> None:
         ("vix_break_30", METRIC_VIX, "突破30", 30.0, "level", "strong", 1, "VIX突破30(强提示)"),
         ("vix_weekly_30pct", METRIC_VIX, "单周上升>=30%", 30.0, "pct", "normal", 1, "VIX单周上升30%"),
         ("vix_weekly_50pct", METRIC_VIX, "单周上升>=50%", 50.0, "pct", "strong", 1, "VIX单周上升50%(强提示)"),
+        # V5.1 恐慌情绪指标阈值
+        ("vvix_high_100", METRIC_VVIX, "VVIX>100(恐慌加速)", 100.0, "level", "strong", 1, "VVIX突破100,恐慌正在加速"),
+        ("skew_high_150", METRIC_SKEW, "SKEW>150(尾部风险)", 150.0, "level", "strong", 1, "SKEW突破150,黑天鹅担忧升温"),
+        ("qvix50_low_15", METRIC_50ETF_QVIX, "50ETF波指<15(市场平静)", 15.0, "level_low", "normal", 1, "50ETF波指低于15,市场情绪平静"),
+        ("qvix50_high_30", METRIC_50ETF_QVIX, "50ETF波指>30(恐慌)", 30.0, "level", "strong", 1, "50ETF波指突破30,A股恐慌升温"),
+        ("qvix300_high_30", METRIC_300ETF_QVIX, "300ETF波指>30(恐慌)", 30.0, "level", "strong", 1, "300ETF波指突破30,沪深300恐慌升温"),
     ]
     now = datetime.now().isoformat()
     for d in defaults:
@@ -303,6 +336,77 @@ async def fetch_vix() -> Optional[float]:
     return None
 
 
+async def fetch_vvix() -> Optional[float]:
+    """VVIX - VIX的波动率(恐慌加速度)。Yahoo Finance ^VVIX。"""
+    try:
+        val = await _fetch_yahoo_quote("%5EVVIX", METRIC_VVIX, days=60)
+        if val: logger.info(f"[MACRO] vvix from yahoo: {val}")
+        return val
+    except Exception as e:
+        logger.warning(f"[MACRO] vvix failed: {e}")
+        return None
+
+
+async def fetch_skew() -> Optional[float]:
+    """SKEW - 尾部风险/黑天鹅担忧。Yahoo Finance ^SKEW。"""
+    try:
+        val = await _fetch_yahoo_quote("%5ESKEW", METRIC_SKEW, days=60)
+        if val: logger.info(f"[MACRO] skew from yahoo: {val}")
+        return val
+    except Exception as e:
+        logger.warning(f"[MACRO] skew failed: {e}")
+        return None
+
+
+async def fetch_50etf_qvix() -> Optional[float]:
+    """50ETF QVIX - A股50ETF隐含波动率(中国版VIX)。akshare。"""
+    try:
+        import akshare as ak
+        df = await asyncio.to_thread(ak.index_option_50etf_qvix)
+        if df is None or len(df) == 0:
+            return None
+        # 存最近30天历史
+        df = df.tail(30)
+        latest_val = None
+        for _, row in df.iterrows():
+            val = float(row.get("close", 0))
+            if val > 0:
+                today = str(row.get("date", datetime.now().strftime("%Y-%m-%d")))[:10]
+                _save_macro_metric(METRIC_50ETF_QVIX, today, val, val, "akshare", "index_option_50etf_qvix")
+                if latest_val is None:
+                    latest_val = val
+        if latest_val:
+            logger.info(f"[MACRO] 50etf_qvix from akshare: {latest_val}")
+        return latest_val
+    except Exception as e:
+        logger.warning(f"[MACRO] 50etf_qvix failed: {e}")
+        return None
+
+
+async def fetch_300etf_qvix() -> Optional[float]:
+    """300ETF QVIX - 沪深300隐含波动率。akshare。"""
+    try:
+        import akshare as ak
+        df = await asyncio.to_thread(ak.index_option_300etf_qvix)
+        if df is None or len(df) == 0:
+            return None
+        df = df.tail(30)
+        latest_val = None
+        for _, row in df.iterrows():
+            val = float(row.get("close", 0))
+            if val > 0:
+                today = str(row.get("date", datetime.now().strftime("%Y-%m-%d")))[:10]
+                _save_macro_metric(METRIC_300ETF_QVIX, today, val, val, "akshare", "index_option_300etf_qvix")
+                if latest_val is None:
+                    latest_val = val
+        if latest_val:
+            logger.info(f"[MACRO] 300etf_qvix from akshare: {latest_val}")
+        return latest_val
+    except Exception as e:
+        logger.warning(f"[MACRO] 300etf_qvix failed: {e}")
+        return None
+
+
 async def _fetch_with_timeout(coro, metric_type: str, timeout_sec: float = 45.0) -> Optional[float]:
     """带超时保护的 fetch 封装,防止单个 akshare 调用阻塞整个 refresh。"""
     try:
@@ -316,12 +420,17 @@ async def _fetch_with_timeout(coro, metric_type: str, timeout_sec: float = 45.0)
 
 
 async def refresh_all_macro() -> dict:
-    """拉取全部4个宏观指标。返回 {metric_type: value}。每个 fetch 带45s超时,单个失败不影响其他。"""
+    """拉取全部8个宏观指标(4利率汇率+4恐慌情绪)。返回 {metric_type: value}。每个 fetch 带45s超时,单个失败不影响其他。"""
     results = {}
     results[METRIC_CN_10Y_BOND] = await _fetch_with_timeout(fetch_cn_10y_bond_yield(), METRIC_CN_10Y_BOND)
     results[METRIC_US_10Y_TREASURY] = await _fetch_with_timeout(fetch_us_10y_treasury_yield(), METRIC_US_10Y_TREASURY)
     results[METRIC_USD_CNH] = await _fetch_with_timeout(fetch_usd_cnh(), METRIC_USD_CNH)
     results[METRIC_VIX] = await _fetch_with_timeout(fetch_vix(), METRIC_VIX)
+    # V5.1 恐慌情绪指标
+    results[METRIC_VVIX] = await _fetch_with_timeout(fetch_vvix(), METRIC_VVIX)
+    results[METRIC_SKEW] = await _fetch_with_timeout(fetch_skew(), METRIC_SKEW)
+    results[METRIC_50ETF_QVIX] = await _fetch_with_timeout(fetch_50etf_qvix(), METRIC_50ETF_QVIX)
+    results[METRIC_300ETF_QVIX] = await _fetch_with_timeout(fetch_300etf_qvix(), METRIC_300ETF_QVIX)
     return results
 
 

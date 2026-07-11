@@ -1949,13 +1949,45 @@ function MultiPeriodValuationPanel({
 // 4个日频指标(中债/美债/USD-CNH/VIX), 只提示不改金额
 
 // V4.2 P4-B: 格式化宏观指标当前值的小数位
-// 债券收益率/汇率保留4位, VIX保留2位
+// V5.1: 债券/汇率4位, VIX/VVIX/SKEW/QVIX 2位
 function formatMacroValue(val: number, metricType: string): string {
-  if (metricType === 'vix') {
+  // 恐慌/情绪类指数保留2位小数
+  const fearTypes = new Set(['vix', 'vvix', 'skew', 'qvix_50etf', 'qvix_300etf']);
+  if (fearTypes.has(metricType)) {
     return val.toFixed(2);
   }
   // 债券收益率和汇率保留4位小数
   return val.toFixed(4);
+}
+
+// V5.1: 恐慌级别判断函数
+// 仅对 VIX/VVIX/SKEW/QVIX 有效, 其他返回默认
+function getFearLevel(metricType: string, value: number | null): { label: string; color: string } {
+  if (value === null) return { label: '—', color: 'text-muted-foreground' };
+  switch (metricType) {
+    case 'vix':
+      if (value < 15) return { label: '平静', color: 'text-emerald-600 dark:text-emerald-400' };
+      if (value < 20) return { label: '正常', color: 'text-muted-foreground' };
+      if (value < 30) return { label: '恐慌升温', color: 'text-amber-600 dark:text-amber-400' };
+      if (value < 40) return { label: '明显恐慌', color: 'text-orange-600 dark:text-orange-400' };
+      return { label: '极端恐慌', color: 'text-red-600 dark:text-red-400' };
+    case 'vvix':
+      if (value < 80) return { label: '正常', color: 'text-muted-foreground' };
+      if (value < 100) return { label: '升温', color: 'text-amber-600 dark:text-amber-400' };
+      return { label: '加速', color: 'text-red-600 dark:text-red-400' };
+    case 'skew':
+      if (value < 130) return { label: '正常', color: 'text-muted-foreground' };
+      if (value < 150) return { label: '关注', color: 'text-amber-600 dark:text-amber-400' };
+      return { label: '黑天鹅风险', color: 'text-red-600 dark:text-red-400' };
+    case 'qvix_50etf':
+    case 'qvix_300etf':
+      if (value < 15) return { label: '平静', color: 'text-emerald-600 dark:text-emerald-400' };
+      if (value < 25) return { label: '正常', color: 'text-muted-foreground' };
+      if (value < 30) return { label: '升温', color: 'text-amber-600 dark:text-amber-400' };
+      return { label: '恐慌', color: 'text-red-600 dark:text-red-400' };
+    default:
+      return { label: '—', color: 'text-muted-foreground' };
+  }
 }
 
 function formatMacroChange(val: number | null, metricType: string): string {
@@ -2027,6 +2059,62 @@ function MacroThermometerPanel() {
   const prompts: MacroPrompt[] = macroPromptsQuery.data?.prompts ?? [];
   const hasAlert = macroPromptsQuery.data?.has_alert ?? false;
 
+  // V5.1: 按分类分组 (3类: macro_rate / us_fear / cn_sentiment)
+  // 后端可能未返回 category 字段时, 按 metric_type 兜底归类
+  const fearMetricTypes = new Set(['vix', 'vvix', 'skew', 'qvix_50etf', 'qvix_300etf']);
+  const getItemCategory = useCallback((it: MacroMetricItem): string => {
+    if (it.category) return it.category;
+    if (fearMetricTypes.has(it.metric_type)) {
+      return it.metric_type.startsWith('qvix') ? 'cn_sentiment' : 'us_fear';
+    }
+    return 'macro_rate';
+  }, []);
+
+  // 分类配置: 图标/说明文字/状态列展示方式
+  const categoryConfigs: Record<string, {
+    label: string;
+    icon?: React.ReactNode;
+    iconColor?: string;
+    description?: string;
+    useFearLevel: boolean;
+  }> = {
+    macro_rate: {
+      label: '利率与汇率',
+      description: '中债/美债收益率与离岸人民币汇率, 反映宏观流动性环境。',
+      useFearLevel: false,
+    },
+    us_fear: {
+      label: '美股恐慌指数',
+      icon: <AlertTriangle className="size-3.5" />,
+      iconColor: 'text-red-600 dark:text-red-400',
+      description: 'VIX=普通恐慌, VVIX=恐慌加速度, SKEW=黑天鹅担忧。恐慌指数只辅助加仓,不覆盖规则引擎。',
+      useFearLevel: true,
+    },
+    cn_sentiment: {
+      label: 'A股情绪指标',
+      icon: <Activity className="size-3.5" />,
+      iconColor: 'text-orange-600 dark:text-orange-400',
+      description: 'QVIX=A股期权隐含波动率(中国版VIX)。高=恐慌,低=平静。',
+      useFearLevel: true,
+    },
+  };
+
+  const categoryOrder: string[] = ['macro_rate', 'us_fear', 'cn_sentiment'];
+  // 兜底分类列表 (后端未返回时使用)
+  const categories =
+    macroTempQuery.data?.categories && macroTempQuery.data.categories.length > 0
+      ? macroTempQuery.data.categories
+      : categoryOrder.map((key) => ({ key, label: categoryConfigs[key]?.label ?? key }));
+
+  // 按 category 分组
+  const itemsByCategory: Record<string, MacroMetricItem[]> = {};
+  for (const cat of categoryOrder) itemsByCategory[cat] = [];
+  for (const it of items) {
+    const cat = getItemCategory(it);
+    if (!itemsByCategory[cat]) itemsByCategory[cat] = [];
+    itemsByCategory[cat].push(it);
+  }
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -2034,10 +2122,10 @@ function MacroThermometerPanel() {
           <div className="min-w-0">
             <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
               <Thermometer className="size-4 text-primary" />
-              极简宏观温度计
+              宏观温度计
             </CardTitle>
             <CardDescription className="text-xs mt-0.5">
-              V4.2 · 只提示不改金额 · 4个日频指标
+              V5.1 · 8指标分3类 · 利率汇率/美股恐慌/A股情绪 · 只提示不改金额
             </CardDescription>
           </div>
           <Button
@@ -2077,57 +2165,95 @@ function MacroThermometerPanel() {
           </Alert>
         )}
 
-        {/* 4指标表格 */}
-        <div className="overflow-x-auto max-h-72 overflow-y-auto">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-card">
-              <tr className="border-b">
-                <th className="text-left py-2 font-medium">指标</th>
-                <th className="text-right py-2 font-medium">当前值</th>
-                <th className="text-right py-2 font-medium">周变化</th>
-                <th className="text-right py-2 font-medium">月变化</th>
-                <th className="text-center py-2 font-medium">状态</th>
-                <th className="text-right py-2 font-medium">更新</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="text-center py-6 text-muted-foreground">
-                    暂无宏观指标数据,点击右上角"刷新宏观"获取
-                  </td>
-                </tr>
-              )}
-              {items.map((it) => (
-                <tr key={it.metric_type} className="border-b last:border-0">
-                  <td className="py-2">
-                    <div className="font-medium">{it.name}</div>
-                    <div className="text-[10px] text-muted-foreground">{it.affects}</div>
-                  </td>
-                  <td className="text-right py-2 font-mono">
-                    {it.current_value !== null
-                      ? `${formatMacroValue(it.current_value, it.metric_type)}${it.unit}`
-                      : '—'}
-                  </td>
-                  <td className={`text-right py-2 font-mono ${formatMacroChangeColor(it.weekly_change)}`}>
-                    {formatMacroChange(it.weekly_change, it.metric_type)}
-                  </td>
-                  <td className={`text-right py-2 font-mono ${formatMacroChangeColor(it.monthly_change)}`}>
-                    {formatMacroChange(it.monthly_change, it.metric_type)}
-                  </td>
-                  <td className="text-center py-2">
-                    <MacroQualityBadge status={it.quality_status} />
-                  </td>
-                  <td className="text-right py-2 text-muted-foreground whitespace-nowrap">
-                    {it.trade_date || '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {/* V5.1: 按分类分块展示 */}
+        {items.length === 0 ? (
+          <div className="text-center py-6 text-xs text-muted-foreground">
+            暂无宏观指标数据,点击右上角"刷新宏观"获取
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {categories.map((cat) => {
+              const cfg = categoryConfigs[cat.key];
+              const catItems = itemsByCategory[cat.key] ?? [];
+              if (catItems.length === 0) return null;
+              return (
+                <section key={cat.key} className="space-y-1.5">
+                  {/* 分类标题 */}
+                  <div className="flex items-center gap-1.5">
+                    {cfg?.icon && (
+                      <span className={cfg.iconColor}>{cfg.icon}</span>
+                    )}
+                    <h4 className="text-xs font-semibold">{cat.label ?? cfg?.label ?? cat.key}</h4>
+                    <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
+                      {catItems.length}
+                    </Badge>
+                  </div>
+                  {/* 分类说明 */}
+                  {cfg?.description && (
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      {cfg.description}
+                    </p>
+                  )}
+                  {/* 紧凑表格 */}
+                  <div className="overflow-x-auto max-h-60 overflow-y-auto rounded-md border">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-card">
+                        <tr className="border-b">
+                          <th className="text-left py-1.5 px-2 font-medium">指标</th>
+                          <th className="text-right py-1.5 px-2 font-medium">当前值</th>
+                          <th className="text-right py-1.5 px-2 font-medium">周变化</th>
+                          <th className="text-right py-1.5 px-2 font-medium">月变化</th>
+                          <th className="text-center py-1.5 px-2 font-medium">状态</th>
+                          <th className="text-right py-1.5 px-2 font-medium">更新</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {catItems.map((it) => {
+                          const fear = cfg?.useFearLevel
+                            ? getFearLevel(it.metric_type, it.current_value)
+                            : null;
+                          return (
+                            <tr key={it.metric_type} className="border-b last:border-0">
+                              <td className="py-1.5 px-2">
+                                <div className="font-medium">{it.name}</div>
+                                <div className="text-[10px] text-muted-foreground">{it.affects}</div>
+                              </td>
+                              <td className="text-right py-1.5 px-2 font-mono">
+                                {it.current_value !== null
+                                  ? `${formatMacroValue(it.current_value, it.metric_type)}${it.unit}`
+                                  : '—'}
+                              </td>
+                              <td className={`text-right py-1.5 px-2 font-mono ${formatMacroChangeColor(it.weekly_change)}`}>
+                                {formatMacroChange(it.weekly_change, it.metric_type)}
+                              </td>
+                              <td className={`text-right py-1.5 px-2 font-mono ${formatMacroChangeColor(it.monthly_change)}`}>
+                                {formatMacroChange(it.monthly_change, it.metric_type)}
+                              </td>
+                              <td className="text-center py-1.5 px-2 whitespace-nowrap">
+                                {fear ? (
+                                  <span className={`text-[11px] font-medium ${fear.color}`}>
+                                    {fear.label}
+                                  </span>
+                                ) : (
+                                  <MacroQualityBadge status={it.quality_status} />
+                                )}
+                              </td>
+                              <td className="text-right py-1.5 px-2 text-muted-foreground whitespace-nowrap">
+                                {it.trade_date || '—'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        )}
         {!hasAlert && items.length > 0 && (
-          <p className="text-xs text-muted-foreground mt-2">
+          <p className="text-xs text-muted-foreground mt-3">
             宏观温度计：本周无明显宏观异常。
           </p>
         )}

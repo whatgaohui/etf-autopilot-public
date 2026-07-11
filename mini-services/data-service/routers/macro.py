@@ -18,8 +18,11 @@ from pydantic import BaseModel
 
 from config import DB_PATH
 from services.macro_service import (
-    ALL_MACRO_METRICS, METRIC_CN_10Y_BOND, METRIC_US_10Y_TREASURY,
+    ALL_MACRO_METRICS, MACRO_METRIC_META,
+    METRIC_CN_10Y_BOND, METRIC_US_10Y_TREASURY,
     METRIC_USD_CNH, METRIC_VIX,
+    METRIC_VVIX, METRIC_SKEW, METRIC_50ETF_QVIX, METRIC_300ETF_QVIX,
+    US_FEAR_METRICS, CN_SENTIMENT_METRICS, ALL_FEAR_METRICS,
     _ensure_macro_tables, _get_latest_metric, _get_metric_n_days_ago,
     get_macro_history, refresh_all_macro,
 )
@@ -27,24 +30,29 @@ from services.macro_service import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/macro", tags=["macro"])
 
-# 指标元信息
-METRIC_META = {
-    METRIC_CN_10Y_BOND: {"name": "中国10年国债收益率", "unit": "%", "affects": "红利ETF、A股估值", "direction": "up_negative"},
-    METRIC_US_10Y_TREASURY: {"name": "美国10年国债收益率", "unit": "%", "affects": "标普500、纳斯达克、科创50", "direction": "up_negative"},
-    METRIC_USD_CNH: {"name": "USD/CNH离岸人民币", "unit": "", "affects": "A股宽基、QDII人民币收益", "direction": "up_negative"},
-    METRIC_VIX: {"name": "VIX恐慌指数", "unit": "", "affects": "全球风险偏好、现金水池战略价值", "direction": "up_negative"},
-}
+# 指标分类(用于前端分组展示)
+MACRO_CATEGORIES = [
+    {"key": "macro_rate", "label": "利率与汇率"},
+    {"key": "us_fear", "label": "美股恐慌指数"},
+    {"key": "cn_sentiment", "label": "A股情绪指标"},
+]
 
 
 @router.get("/temperature")
 async def get_temperature():
-    """获取4个执行层宏观温度计指标(当前值+周变化+月变化+状态)。"""
+    """获取全部8个执行层宏观温度计指标(4利率汇率+4恐慌情绪, 含分类)。
+    
+    返回:
+    - items: 指标列表(每个带 category / category_label 字段)
+    - categories: 分类定义
+    - updated_at: 当前时间
+    """
     items = []
     for mt in ALL_MACRO_METRICS:
         latest = _get_latest_metric(mt)
         week_ago = _get_metric_n_days_ago(mt, 7)
         month_ago = _get_metric_n_days_ago(mt, 30)
-        meta = METRIC_META.get(mt, {})
+        meta = MACRO_METRIC_META.get(mt, {})
         current = latest.get("clean_value") if latest else None
         weekly_change = None
         monthly_change = None
@@ -63,9 +71,15 @@ async def get_temperature():
             "source": latest.get("source_id") if latest else None,
             "quality_status": latest.get("quality_status") if latest else "unavailable",
             "affects": meta.get("affects", ""),
+            "category": meta.get("category", ""),
+            "category_label": meta.get("category_label", ""),
             "updated_at": latest.get("updated_at") if latest else None,
         })
-    return {"items": items, "updated_at": datetime.now().isoformat()}
+    return {
+        "items": items,
+        "categories": MACRO_CATEGORIES,
+        "updated_at": datetime.now().isoformat(),
+    }
 
 
 @router.get("/prompts")
@@ -90,7 +104,7 @@ async def get_prompts():
                 if not week_ago or week_ago.get("clean_value") is None:
                     continue
                 weekly_change = current - week_ago["clean_value"]
-                meta = METRIC_META.get(mt, {})
+                meta = MACRO_METRIC_META.get(mt, {})
                 # 遍历该指标的阈值配置
                 for cfg in configs:
                     if cfg["metric_type"] != mt:
@@ -115,6 +129,10 @@ async def get_prompts():
                     elif unit == "level" and current >= threshold:
                         triggered = True
                         change_str = f"当前{current:.1f}"
+                    elif unit == "level_low" and current <= threshold:
+                        # V5.1: 低于阈值触发(如 50ETF波指<15 表示市场平静)
+                        triggered = True
+                        change_str = f"当前{current:.1f}"
                     if triggered:
                         # 生成提示文案
                         if mt == METRIC_CN_10Y_BOND:
@@ -128,6 +146,17 @@ async def get_prompts():
                                 text = f"本周VIX突破{threshold:.0f}，全球风险偏好明显下降。系统不会因此自动卖出，仅提示高波动环境。"
                             else:
                                 text = f"本周VIX{'上升' if weekly_change>0 else '下降'}{abs(weekly_change/week_ago['clean_value']*100):.1f}%，市场隐含波动率{'上升' if weekly_change>0 else '下降'}。"
+                        elif mt == METRIC_VVIX:
+                            text = f"VVIX突破{threshold:.0f}(当前{current:.1f})，VIX自身波动率上升，恐慌正在加速。仅作风险提示，不改变买入金额。"
+                        elif mt == METRIC_SKEW:
+                            text = f"SKEW突破{threshold:.0f}(当前{current:.1f})，期权市场定价尾部风险上升，黑天鹅担忧升温。仅作风险提示，不改变买入金额。"
+                        elif mt == METRIC_50ETF_QVIX:
+                            if unit == "level_low":
+                                text = f"50ETF波指低于{threshold:.0f}(当前{current:.1f})，A股市场情绪平静，隐含波动率处于低位。"
+                            else:
+                                text = f"50ETF波指突破{threshold:.0f}(当前{current:.1f})，A股隐含波动率上升，恐慌情绪升温。仅作风险提示，不改变买入金额。"
+                        elif mt == METRIC_300ETF_QVIX:
+                            text = f"300ETF波指突破{threshold:.0f}(当前{current:.1f})，沪深300隐含波动率上升，恐慌情绪升温。仅作风险提示，不改变买入金额。"
                         else:
                             text = cfg["display_text"] or ""
                         prompts.append({
@@ -141,6 +170,8 @@ async def get_prompts():
                             "severity": severity,
                             "prompt_text": text,
                             "affects": meta.get("affects", ""),
+                            "category": meta.get("category", ""),
+                            "category_label": meta.get("category_label", ""),
                         })
             # 持久化提示到 macro_prompt_log
             for p in prompts:
@@ -171,7 +202,7 @@ async def get_research():
     """低频研究层(占位)。V4.2 PRD§11.12: 月频指标只进入研究层,不进入每周执行单。"""
     return {
         "items": [],
-        "message": "研究层指标(社融/M1M2/PMI/CPI/PPI等)待P2接入,当前仅执行层4指标可用。",
+        "message": "研究层指标(社融/M1M2/PMI/CPI/PPI等)待P2接入,当前执行层已有8个指标(4利率汇率+4恐慌情绪)可用。",
         "research_metrics": ["社融", "M1/M2", "PMI", "CPI/PPI", "工业企业利润", "社零", "地产销售/投资", "非农", "失业率", "核心PCE", "ISM PMI", "信用利差", "商品价格"],
     }
 

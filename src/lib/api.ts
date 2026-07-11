@@ -577,11 +577,16 @@ export interface MacroMetricItem {
   quality_status: string;
   affects: string;
   updated_at: string | null;
+  // V5.1 新增分类
+  category?: string;
+  category_label?: string;
 }
 
 export interface MacroTemperatureResponse {
   items: MacroMetricItem[];
   updated_at: string;
+  // V5.1 新增分类列表
+  categories?: Array<{ key: string; label: string }>;
 }
 
 export interface MacroPrompt {
