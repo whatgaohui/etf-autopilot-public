@@ -4,6 +4,7 @@ import { useState, useMemo, Fragment } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
+  Settings,
   Settings2,
   Save,
   Loader2,
@@ -4299,7 +4300,11 @@ function BlacklistSection({ configs }: { configs: EtfConfig[] }) {
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
+type SettingsCategory = 'data' | 'strategy' | 'notify'
+
 export default function SettingsTab() {
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>('data')
+
   const {
     data: etfConfigs = [],
     isLoading: etfLoading,
@@ -4363,79 +4368,59 @@ export default function SettingsTab() {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-4xl mx-auto">
-      <SettingsSectionNav />
-      <div id="section-target" className="scroll-mt-32">
-        <TargetAllocationSection configs={etfConfigs} />
-      </div>
-      <div id="section-budget" className="scroll-mt-32">
-        <WeeklyBudgetSection configs={systemConfigs} />
-      </div>
-      <div id="section-rules" className="scroll-mt-32">
-        <RuleManagementSection rules={rules} etfMap={etfMap} />
-      </div>
-      <div id="section-blacklist" className="scroll-mt-32">
-        <BlacklistSection configs={etfConfigs} />
-      </div>
-      <div id="section-datasource" className="scroll-mt-32">
-        <DataSourceSection />
-      </div>
-      <div id="section-quality" className="scroll-mt-32">
-        <DataQualityConfigSection />
-      </div>
-      <div id="section-cashpool" className="scroll-mt-32">
-        <CashPoolConfigSection configs={systemConfigs} />
-      </div>
-      <div id="section-notify" className="scroll-mt-32">
-        <NotifyConfigSection configs={systemConfigs} />
-      </div>
-      <div id="section-admin" className="scroll-mt-32">
-        <AdminSection />
-      </div>
-      <div id="section-backtest" className="scroll-mt-32">
-        <BacktestSection />
-      </div>
-    </div>
-  )
-}
-
-// ─── V4.2 P5-B: Settings page section navigation (sticky anchor bar) ────────
-
-const SETTINGS_SECTION_DEFS: Array<{ id: string; label: string }> = [
-  { id: 'section-target', label: '目标配置' },
-  { id: 'section-budget', label: '定投额度' },
-  { id: 'section-rules', label: '规则管理' },
-  { id: 'section-blacklist', label: '黑名单' },
-  { id: 'section-datasource', label: '数据源管理' },
-  { id: 'section-quality', label: '数据质量' },
-  { id: 'section-cashpool', label: '现金水池' },
-  { id: 'section-notify', label: '通知' },
-  { id: 'section-admin', label: '后台管理' },
-  { id: 'section-backtest', label: '回测验证' },
-]
-
-function SettingsSectionNav() {
-  const handleJump = (id: string) => {
-    const el = document.getElementById(id)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-  }
-  return (
-    <div className="sticky top-14 z-40 -mx-4 sm:-mx-6 px-4 sm:px-6 py-2 bg-background/95 backdrop-blur border-b shadow-sm">
-      <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-        {SETTINGS_SECTION_DEFS.map((s) => (
+      {/* V5.1: 3大类分类导航(替代原10个Section锚点) */}
+      <div className="sticky top-14 z-40 -mx-4 sm:-mx-6 px-4 sm:px-6 py-2 bg-background/95 backdrop-blur border-b shadow-sm">
+        <div className="flex gap-2 flex-wrap">
           <Button
-            key={s.id}
             type="button"
-            variant="ghost"
-            size="sm"
-            className="shrink-0 h-8 px-3 text-xs text-muted-foreground hover:text-foreground pointer-events-auto"
-            onClick={() => handleJump(s.id)}
+            onClick={() => setActiveCategory('data')}
+            variant={activeCategory === 'data' ? 'default' : 'ghost'}
+            className="h-9"
           >
-            {s.label}
+            <Database className="size-4" />
+            数据与监控
           </Button>
-        ))}
+          <Button
+            type="button"
+            onClick={() => setActiveCategory('strategy')}
+            variant={activeCategory === 'strategy' ? 'default' : 'ghost'}
+            className="h-9"
+          >
+            <Settings className="size-4" />
+            投资策略
+          </Button>
+          <Button
+            type="button"
+            onClick={() => setActiveCategory('notify')}
+            variant={activeCategory === 'notify' ? 'default' : 'ghost'}
+            className="h-9"
+          >
+            <Bell className="size-4" />
+            系统通知
+          </Button>
+        </div>
       </div>
+
+      {activeCategory === 'data' && (
+        <>
+          <DataSourceSection />
+          <DataQualityConfigSection />
+          <BacktestSection />
+          <AdminSection />
+        </>
+      )}
+      {activeCategory === 'strategy' && (
+        <>
+          <TargetAllocationSection configs={etfConfigs} />
+          <BlacklistSection configs={etfConfigs} />
+          <WeeklyBudgetSection configs={systemConfigs} />
+          <RuleManagementSection rules={rules} etfMap={etfMap} />
+          <CashPoolConfigSection configs={systemConfigs} />
+        </>
+      )}
+      {activeCategory === 'notify' && (
+        <NotifyConfigSection configs={systemConfigs} />
+      )}
     </div>
   )
 }
