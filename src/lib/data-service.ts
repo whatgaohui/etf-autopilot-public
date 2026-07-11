@@ -71,28 +71,38 @@ function spawnDataService(): void {
   }
 }
 
+let spawnLock = false;
+
 /**
  * Ensure the Python data-service is running. If not, spawn it (detached) and
- * wait up to 20 seconds for it to become reachable. Each call checks liveness
- * first; if down, attempts a fresh spawn (no stale promise caching).
+ * wait up to 30 seconds for it to become reachable. Uses a spawn lock to
+ * prevent concurrent spawns. Returns true if service is reachable.
  */
 export async function ensureDataServiceRunning(): Promise<boolean> {
   // Fast path: already reachable
   if (await isDataServiceRunning()) return true;
 
-  // Slow path: spawn and wait (reset promise each time so retries work)
+  // If already spawning, wait for that to finish
   if (startupPromise) {
     const ok = await startupPromise;
     if (ok) return true;
     startupPromise = null;
   }
 
+  // Prevent concurrent spawns
+  if (spawnLock) {
+    // Wait a bit and recheck
+    await new Promise((r) => setTimeout(r, 3000));
+    return await isDataServiceRunning();
+  }
+
+  spawnLock = true;
   startupPromise = (async () => {
     spawnDataService();
     // Poll until reachable or timeout
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 800));
+      await new Promise((r) => setTimeout(r, 1000));
       if (await isDataServiceRunning()) return true;
     }
     return false;
@@ -100,5 +110,6 @@ export async function ensureDataServiceRunning(): Promise<boolean> {
 
   const ok = await startupPromise;
   if (!ok) startupPromise = null;
+  spawnLock = false;
   return ok;
 }
