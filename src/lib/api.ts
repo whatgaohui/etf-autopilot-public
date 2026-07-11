@@ -65,6 +65,7 @@ export async function uploadOcrImage(file: File): Promise<{ holdings: OcrResult[
   const res = await fetch(`${BASE_URL}/ocr`, {
     method: 'POST',
     body: formData,
+    signal: AbortSignal.timeout(120000),
   });
 
   if (!res.ok) {

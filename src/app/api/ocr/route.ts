@@ -64,11 +64,19 @@ export async function POST(request: NextRequest) {
       holdings = [];
     }
 
+    if (holdings.length === 0) {
+      return NextResponse.json(
+        { error: 'OCR识别结果为空，请确认截图清晰或尝试手动录入' },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json({ holdings });
   } catch (error) {
     console.error('OCR error:', error);
+    const errMsg = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: 'OCR recognition failed' },
+      { error: `OCR识别失败: ${errMsg.slice(0, 100)}` },
       { status: 500 }
     );
   }
