@@ -586,7 +586,10 @@ def _check_soft_wind_control(
                             effect="禁止增强仓，仅允许基础仓",
                         ))
         elif rule.type == "soft_veto_all":
-            # >95% 暂停全部
+            # V5.0 Sprint1 E4 — 极端估值软停止(>95%暂停新增):
+            # 当 PE 分位 ≥ 95% 时, 基础仓+增强仓全部暂停新增,
+            # 仅当用户策略手动允许时可豁免(目前无豁免路径, 严格执行)。
+            # 这是 V4.2 §5.2 第4档 soft_veto_all 在 V5.0 的延续, 逻辑保持不变。
             if threshold is not None and pe_percentile >= threshold:
                 soft_level = "pause_all"
                 hits.append(RuleHit(
@@ -725,6 +728,13 @@ def _check_boost_hits(
         低于阈值 = 严重欠配 → 触发 boost
       - 股息率类 boost 规则若未来新增, 应用 _is_metric_expensive() 判断:
         股息率 > threshold = 便宜 → 应触发 boost (与 PE 反向)
+
+    V5.0 Sprint1 E4 — 红利ETF反向分位(明确注释):
+      红利ETF(510880)的股息率分位是 higher_is_cheaper (越高越便宜),
+      因此买入侧 boost 触发条件应为 `dy_pct > threshold` (分位高=便宜=该买),
+      与 PE 的 `pe_percentile < threshold` (分位低=便宜=该买) 反向。
+      当前 reduce/boost 规则集里没有股息率相关规则(红利ETF再平衡由
+      _check_dividend_rebalance 单独处理), 但未来若新增需严格遵守此方向。
     """
     hits: list[RuleHit] = []
 
@@ -938,7 +948,19 @@ def _check_dividend_rebalance(
     current_value: float,
     invested_total: float,
 ) -> Optional[RebalanceSuggestion]:
-    """红利ETF再平衡（§7.3）。股息率分位低=贵。"""
+    """红利ETF再平衡（§7.3）。股息率分位低=贵。
+
+    V5.0 Sprint1 E4 — 红利ETF反向分位(明确注释):
+    股息率分位(dividend_yield_percentile)与 PE/PB 分位方向相反:
+      - PE/PB 分位: higher_is_expensive (分位越高=越贵)
+      - 股息率分位: higher_is_cheaper  (分位越高=越便宜, 反向)
+
+    因此卖出触发条件用 `dy_pct < threshold` (分位低=贵=该卖),
+    与 _check_a_share_rebalance 中 `valuation > 95` (分位高=贵=该卖) 反向。
+    此方向在 config.METRIC_DIRECTION 中已显式声明:
+      dividend_yield / dividend_yield_percentile / dividend_bond_spread
+      均为 higher_is_cheaper。当前代码(L955/L958 用 < threshold)符合反向语义。
+    """
     # 优先用股息率分位；若只有原始股息率，无法算分位则不触发强规则（保守）
     dy_pct = dividend_yield_percentile
     if dy_pct is None:
@@ -951,9 +973,11 @@ def _check_dividend_rebalance(
     if excess_value <= 0:
         return None
 
+    # V5.0 E4 反向分位: dy_pct < 10 表示股息率分位极低=价格偏贵=应卖
     # Level2: 股息率分位<10% 且 超配≥8pp → 卖50%
     if dy_pct < 10 and over_pp >= 8:
         sell_ratio, level, threshold_desc = 0.5, "level2", f"股息率分位{dy_pct:.1f}%<10% 且 超配{over_pp:.1f}pp≥8pp"
+    # V5.0 E4 反向分位: dy_pct < 15 表示股息率分位偏低=价格偏贵=应卖
     # Level1: 股息率分位<15% 且 超配≥5pp → 卖30%
     elif dy_pct < 15 and over_pp >= 5:
         sell_ratio, level, threshold_desc = 0.3, "level1", f"股息率分位{dy_pct:.1f}%<15% 且 超配{over_pp:.1f}pp≥5pp"
@@ -1153,6 +1177,24 @@ def calculate_suggestions(
     weekly_budget = request.weekly_budget
 
     holdings_map = {h.code: h for h in holdings}
+
+    # V5.0 Sprint1 E1: 计算输入快照哈希(用于确定性复算验证)
+    # 相同的 holdings + weekly_budget + rules 数量 + 目标比例 → 一定产生相同 hash。
+    # 配合 strategy_version + calculation_snapshot 表实现"相同输入→相同输出"的可复算语义。
+    import hashlib as _hashlib
+    import json as _json
+    inputs_str = _json.dumps({
+        "holdings": [
+            {"code": h.code, "marketValue": h.market_value}
+            for h in sorted(holdings, key=lambda x: x.code)
+        ],
+        "target_ratios": {
+            k: target_ratios[k] for k in sorted(target_ratios.keys())
+        },
+        "weekly_budget": weekly_budget,
+        "rules_count": len(rules),
+    }, sort_keys=True, default=str)
+    inputs_hash = _hashlib.sha256(inputs_str.encode("utf-8")).hexdigest()[:16]
 
     # ──────────────────────────────────────────────
     # Step 2: Determine investable codes & invested_asset_value
@@ -1916,14 +1958,17 @@ def calculate_suggestions(
 
     return CalculateResponse(
         calculationId=f"calc-{uuid.uuid4().hex[:12]}",
-        engineVersion="target-gap-rebalance-v4.2",
-        strategyVersion="strategy-v4.2",
+        engineVersion="target-gap-rebalance-v5.0",
+        strategyVersion="strategy-v5.0",
         calculatedAt=datetime.now().isoformat(),
         allocationStrategy="conservative",
         dataSnapshot={
             "marketDataCacheTime": latest_updated or datetime.now().isoformat(),
-            "rulesConfigVersion": "rules-v4.2",
-            "strategyVersion": "strategy-v4.2",
+            "rulesConfigVersion": "rules-v5.0",
+            "strategyVersion": "strategy-v5.0",
+            # V5.0 Sprint1 E1: 输入快照哈希(确定性复算验证)
+            # 相同 holdings + target_ratios + weekly_budget + rules_count → 相同 inputsHash
+            "inputsHash": inputs_hash,
             "investedAssetValue": round(invested_asset_value, 2),
             "equityAllocationBase": round(equity_allocation_base, 2),
             "afterBudgetTotal": round(after_budget_total, 2),

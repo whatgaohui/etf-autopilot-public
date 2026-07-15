@@ -49,6 +49,59 @@ GRADE_SUSPICIOUS = 60  # 可疑：仅展示，不参与强规则
 # <60 不可用：不参与规则
 
 
+# V5.0 Sprint1 E2: 统一数据质量门禁语义 (PRD V5.0 §数据质量门禁)
+# 在 V4.x 的 quality_status (excellent/usable/suspicious/unavailable) 之外,
+# 新增 5 状态门禁语义, 用于规则引擎统一判断"该指标是否参与何种规则":
+GATE_STATUS: dict[str, str] = {
+    "valid":    "数据有效,可参与规则",
+    "degraded": "数据降级,禁用增强仓但保留基础仓",
+    "stale":    "数据过期,该指标不参与强规则",
+    "conflict": "主备源冲突,该标的硬否决",
+    "missing":  "数据缺失,该指标不参与规则",
+}
+
+
+def get_gate_status(
+    quality_score: float,
+    quality_status: str,
+    is_stale: bool,
+    source_conflict: bool,
+    missing_count: int,
+) -> str:
+    """V5.0 Sprint1 E2: 统一门禁语义判断。
+
+    将 V4.x 的多个分散信号(quality_score / quality_status / staleness /
+    source_conflict / missing_count) 收敛为单一门禁状态, 供规则引擎统一判断。
+
+    优先级（从严到宽）:
+      missing  > conflict > stale > degraded > valid
+
+    Args:
+        quality_score: 0~100 质量分
+        quality_status: excellent|usable|suspicious|unavailable
+        is_stale: 是否过期(由 _check_staleness 判断, red/yellow 都视为 stale)
+        source_conflict: 主备源是否冲突(导致该标的硬否决)
+        missing_count: 关键字段缺失数(若 quality_score==0 且 missing>0, 视为 missing)
+
+    Returns:
+        valid | degraded | stale | conflict | missing
+    """
+    # 1. missing: 关键数据完全缺失
+    if missing_count > 0 and quality_score == 0:
+        return "missing"
+    # 2. conflict: 主备源冲突 → 该标的硬否决
+    if source_conflict:
+        return "conflict"
+    # 3. stale: 数据过期 → 该指标不参与强规则
+    if is_stale:
+        return "stale"
+    # 4. degraded: 质量分<60 → 禁用增强仓但保留基础仓
+    if quality_score < GRADE_SUSPICIOUS:
+        return "degraded"
+    # 5. valid: 数据有效, 可参与规则
+    return "valid"
+
+
 @dataclass
 class QualityScore:
     """数据质量评分结果。"""
@@ -528,6 +581,33 @@ def get_quality_summary() -> dict:
             can_rule_count = sum(1 for r in rows if r["can_use_for_rule"])
             can_strong_count = sum(1 for r in rows if r["can_use_for_strong_rule"])
 
+            # V5.0 Sprint1 E2: 统一数据质量门禁语义统计
+            # 从现有字段推导 is_stale / source_conflict / missing_count:
+            #   - is_stale: freshness_score < 25 (V4.x 新鲜度评级, 25 分=当日)
+            #   - source_conflict: reason 包含主备源冲突关键词且非 passed
+            #   - missing_count: quality_status=unavailable 且 reason 含"缺" → 1, 否则 0
+            gate_counts = {"valid": 0, "degraded": 0, "stale": 0,
+                           "conflict": 0, "missing": 0}
+            _conflict_keywords = ("主备源", "源不一致", "source_inconsistent",
+                                  "source_conflict", "冲突")
+            for r in rows:
+                reason = r["reason"] or ""
+                freshness = r["freshness_score"] if r["freshness_score"] is not None else 0
+                is_stale = float(freshness) < 25.0
+                source_conflict = any(kw in reason for kw in _conflict_keywords)
+                # unavailable + reason 含 "缺" → 视为 missing
+                missing_count = 1 if (
+                    r["quality_status"] == "unavailable" and "缺" in reason
+                ) else 0
+                gate = get_gate_status(
+                    quality_score=r["quality_score"] or 0,
+                    quality_status=r["quality_status"] or "unavailable",
+                    is_stale=is_stale,
+                    source_conflict=source_conflict,
+                    missing_count=missing_count,
+                )
+                gate_counts[gate] += 1
+
             return {
                 "total_metrics": total,
                 "excellent": excellent,
@@ -537,6 +617,8 @@ def get_quality_summary() -> dict:
                 "avg_score": avg_score,
                 "can_use_for_rule_count": can_rule_count,
                 "can_use_for_strong_rule_count": can_strong_count,
+                # V5.0 Sprint1 E2: 统一数据质量门禁语义统计
+                "gate_status_counts": gate_counts,
                 "overall_status": (
                     "excellent" if avg_score >= GRADE_EXCELLENT
                     else "usable" if avg_score >= GRADE_USABLE
@@ -552,7 +634,9 @@ def get_quality_summary() -> dict:
     except Exception as e:
         logger.error(f"[QUALITY] get_quality_summary error: {e}")
         return {"total_metrics": 0, "excellent": 0, "usable": 0, "suspicious": 0,
-                "unavailable": 0, "avg_score": 0, "items": []}
+                "unavailable": 0, "avg_score": 0, "items": [],
+                "gate_status_counts": {"valid": 0, "degraded": 0, "stale": 0,
+                                       "conflict": 0, "missing": 0}}
 
 
 def get_quality_by_code(code: str) -> list[dict]:

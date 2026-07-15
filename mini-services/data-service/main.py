@@ -25,6 +25,7 @@ from routers import (
     macro,
     portfolio,
     refresh,
+    strategy,
 )
 from scheduler.jobs import setup_scheduler
 
@@ -249,6 +250,89 @@ def _init_db():
                  datetime.now().isoformat())
             )
 
+        # V5.0 E1: 策略版本与冻结快照 — 3张新表
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_version (
+                id TEXT PRIMARY KEY,
+                version TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'draft',
+                parameters JSON NOT NULL,
+                doc_ref TEXT,
+                effective_at TEXT,
+                created_reason TEXT,
+                confirmed_by TEXT DEFAULT 'user',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_strategy_version_status
+                ON strategy_version(status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_strategy_version_version
+                ON strategy_version(version);
+
+            CREATE TABLE IF NOT EXISTS calculation_snapshot (
+                id TEXT PRIMARY KEY,
+                calculation_id TEXT NOT NULL,
+                strategy_version_id TEXT NOT NULL,
+                holdings_hash TEXT NOT NULL,
+                cash_hash TEXT NOT NULL,
+                market_hash TEXT NOT NULL,
+                frozen_at TEXT NOT NULL,
+                FOREIGN KEY (strategy_version_id) REFERENCES strategy_version(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_calc_snapshot_calc_id
+                ON calculation_snapshot(calculation_id);
+            CREATE INDEX IF NOT EXISTS idx_calc_snapshot_strategy
+                ON calculation_snapshot(strategy_version_id);
+
+            CREATE TABLE IF NOT EXISTS manual_override (
+                id TEXT PRIMARY KEY,
+                rule TEXT NOT NULL,
+                before_value TEXT,
+                after_value TEXT,
+                reason TEXT,
+                effective_at TEXT NOT NULL,
+                expires_at TEXT,
+                confirmed_by TEXT DEFAULT 'user',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_manual_override_rule
+                ON manual_override(rule, effective_at DESC);
+            """
+        )
+
+        # V5.0 E1: 启动时插入默认V5.0策略版本(若表为空, 不覆盖已有数据)
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM strategy_version").fetchone()
+            if row and row[0] == 0:
+                import json as _json
+                default_v5_params = {
+                    "target_ratios": {
+                        "159338": 0.18, "510880": 0.18, "510330": 0.12,
+                        "588000": 0.12, "513500": 0.24, "513300": 0.16,
+                    },
+                    "weekly_budget": 40000,
+                    "base_bucket_ratio": 0.40,
+                    "value_bucket_ratio": 0.60,
+                    "max_single_etf_buy_ratio": 0.70,
+                    "qdii_release_plan_weeks": 8,
+                    "qdii_release_cap_multiplier": 2.0,
+                }
+                conn.execute(
+                    """INSERT INTO strategy_version
+                       (id, version, status, parameters, doc_ref, effective_at,
+                        created_reason, confirmed_by, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ("sv-v5.0-default", "v5.0", "active",
+                     _json.dumps(default_v5_params, ensure_ascii=False),
+                     "ETF定投助手投资策略说明书V5.0",
+                     datetime.now().isoformat(),
+                     "V5.0初始版本", "system",
+                     datetime.now().isoformat()),
+                )
+                logger.info("[STARTUP] Inserted default V5.0 strategy version (sv-v5.0-default)")
+        except Exception as e:
+            logger.warning(f"[STARTUP] Default V5.0 strategy version insert failed (non-blocking): {e}")
+
         # V4.2 PRD§11.14: 宏观3张表
         try:
             from services.macro_service import _ensure_macro_tables
@@ -337,6 +421,8 @@ app.include_router(admin.router)
 app.include_router(backtest.router)
 app.include_router(execution.router)
 app.include_router(portfolio.router)
+# V5.0 Sprint1 E1: 策略版本与冻结快照 router
+app.include_router(strategy.router)
 
 
 if __name__ == "__main__":
