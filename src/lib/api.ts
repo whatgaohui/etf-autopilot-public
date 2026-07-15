@@ -373,6 +373,14 @@ export interface QualitySummary {
   allow_buy_suggestion: boolean;
   allow_rebalance_suggestion: boolean;
   items: QualityScoreItem[];
+  // V5.0 E2 数据质量门禁 5 态计数（旧 API 可能不返回）
+  gate_status_counts?: {
+    valid: number;
+    degraded: number;
+    stale: number;
+    conflict: number;
+    missing: number;
+  };
 }
 
 export interface FetchLogItem {
@@ -868,4 +876,74 @@ export async function getPortfolioPerformanceHistory(): Promise<{
   return request('/portfolio?type=history');
 }
 
+// ─── V5.0 策略版本 ───
+export interface StrategyVersion {
+  id: string;
+  version: string;
+  status: 'draft' | 'active' | 'retired';
+  parameters: Record<string, unknown>;
+  doc_ref?: string;
+  effective_at?: string;
+  created_reason?: string;
+  confirmed_by?: string;
+  created_at?: string;
+}
 
+export async function getStrategyVersions(): Promise<{ versions: StrategyVersion[] }> {
+  return request('/strategy?type=versions');
+}
+
+export async function getActiveStrategyVersion(): Promise<StrategyVersion> {
+  return request('/strategy?type=active');
+}
+
+export async function activateStrategyVersion(id: string): Promise<{ success: boolean }> {
+  return request(`/strategy?action=activate&id=${encodeURIComponent(id)}`, { method: 'POST' });
+}
+
+// ─── V5.0 E3 现金账本 ───
+export interface CashAccount {
+  account_type: string;
+  balance: number;
+  counts_as_equity_base: boolean;
+  description: string;
+  flow_count: number;
+}
+export interface ConservationCheck {
+  total_check: boolean;
+  total_balance: number;
+  account_checks: Array<{
+    account: string; opening: number; inflow: number; outflow: number;
+    expected_closing: number; actual_closing: number; pass: boolean;
+  }>;
+}
+export interface LedgerEntry {
+  cash_ledger_id: string; cash_account_type: string; source_event: string;
+  source_etf: string; amount: number; created_at: string; status: string;
+  transfer_id: string; entry_type: string;
+}
+export async function getCashAccounts(): Promise<{ accounts: CashAccount[] }> {
+  return request('/cash?type=accounts');
+}
+export async function getCashLedger(limit = 50): Promise<{ entries: LedgerEntry[] }> {
+  return request(`/cash?type=ledger&limit=${limit}`);
+}
+export async function checkConservation(): Promise<ConservationCheck> {
+  return request('/cash?type=conservation');
+}
+
+// ─── V5.0 E5 释放计划 ───
+export interface ReleasePlan {
+  id: string; plan_type: string; account_id: string; state: string;
+  weeks_total: number; weeks_remaining: number; balance: number;
+  weekly_amount: number; target_etf: string; created_at: string; updated_at: string;
+}
+export async function getReleasePlans(): Promise<{ plans: ReleasePlan[] }> {
+  return request('/release-plans?type=all');
+}
+export async function pauseReleasePlan(id: string): Promise<{ success: boolean }> {
+  return request(`/release-plans?action=pause&id=${id}`, { method: 'POST' });
+}
+export async function resumeReleasePlan(id: string): Promise<{ success: boolean }> {
+  return request(`/release-plans?action=resume&id=${id}`, { method: 'POST' });
+}

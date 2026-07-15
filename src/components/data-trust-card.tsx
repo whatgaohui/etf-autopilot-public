@@ -461,6 +461,61 @@ export function DataTrustCard({
             </div>
           </div>
 
+          {/* V5.0 E2: 数据门禁 5 态计数（仅当后端返回 gate_status_counts 时展示） */}
+          {summary.gate_status_counts && (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                <ShieldCheck className="size-3" />
+                <span>数据门禁（5 态）</span>
+                <span className="text-[10px] text-muted-foreground/60">
+                  V5.0 统一语义：valid &gt; degraded &gt; stale &gt; conflict &gt; missing
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className="text-[11px] px-2 py-0.5 gap-1 border-emerald-200 bg-emerald-50/60 text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/30 dark:text-emerald-400"
+                  title="valid: 数据完整、新鲜、无冲突，可参与所有规则"
+                >
+                  <span aria-hidden>✅</span>
+                  有效 <span className="font-mono font-bold">{summary.gate_status_counts.valid ?? 0}</span> 条
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="text-[11px] px-2 py-0.5 gap-1 border-amber-200 bg-amber-50/60 text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-400"
+                  title="degraded: 质量降级但仍可用，仅参与弱规则"
+                >
+                  <span aria-hidden>⚠️</span>
+                  降级 <span className="font-mono font-bold">{summary.gate_status_counts.degraded ?? 0}</span> 条
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="text-[11px] px-2 py-0.5 gap-1 border-orange-200 bg-orange-50/60 text-orange-700 dark:border-orange-800/50 dark:bg-orange-950/30 dark:text-orange-400"
+                  title="stale: 新鲜度过期，需刷新后才能参与规则"
+                >
+                  <span aria-hidden>⏰</span>
+                  过期 <span className="font-mono font-bold">{summary.gate_status_counts.stale ?? 0}</span> 条
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="text-[11px] px-2 py-0.5 gap-1 border-red-200 bg-red-50/60 text-red-700 dark:border-red-800/50 dark:bg-red-950/30 dark:text-red-400"
+                  title="conflict: 主备源冲突，结果不可信，禁止参与规则"
+                >
+                  <span aria-hidden>❌</span>
+                  冲突 <span className="font-mono font-bold">{summary.gate_status_counts.conflict ?? 0}</span> 条
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="text-[11px] px-2 py-0.5 gap-1 border-slate-200 bg-slate-50/60 text-slate-600 dark:border-slate-700/50 dark:bg-slate-900/30 dark:text-slate-400"
+                  title="missing: 数据缺失，禁止参与规则"
+                >
+                  <span aria-hidden>🕳️</span>
+                  缺失 <span className="font-mono font-bold">{summary.gate_status_counts.missing ?? 0}</span> 条
+                </Badge>
+              </div>
+            </div>
+          )}
+
           {/* 区 3：5 类指标状态（行情/净值/溢价/估值/股息） */}
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">

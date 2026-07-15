@@ -3,24 +3,33 @@ import { ensureDataServiceRunning } from '@/lib/data-service';
 
 const PYTHON_SERVICE = 'http://127.0.0.1:3031';
 
-// GET /api/strategy?type=... — 转发到 data-service strategy router
-// type 支持: versions | active
-//   - versions → GET /api/strategy/versions
-//   - active   → GET /api/strategy/versions/active
+// GET /api/cash?type=...&limit=... — 转发到 data-service cash router
+// type 支持:
+//   - accounts     → GET /api/cash/accounts
+//   - ledger       → GET /api/cash/ledger?limit=...
+//   - transfers    → GET /api/cash/transfers?limit=...
+//   - conservation → GET /api/cash/conservation
 export async function GET(request: Request) {
   try {
     await ensureDataServiceRunning();
     const { searchParams } = new URL(request.url);
-    const type = searchParams.get('type') || 'versions';
+    const type = searchParams.get('type') || 'accounts';
+    const limit = searchParams.get('limit') || '50';
 
     let endpoint: string;
     switch (type) {
-      case 'active':
-        endpoint = '/api/strategy/versions/active';
+      case 'ledger':
+        endpoint = `/api/cash/ledger?limit=${encodeURIComponent(limit)}`;
         break;
-      case 'versions':
+      case 'transfers':
+        endpoint = `/api/cash/transfers?limit=${encodeURIComponent(limit)}`;
+        break;
+      case 'conservation':
+        endpoint = '/api/cash/conservation';
+        break;
+      case 'accounts':
       default:
-        endpoint = '/api/strategy/versions';
+        endpoint = '/api/cash/accounts';
         break;
     }
 
@@ -39,38 +48,27 @@ export async function GET(request: Request) {
     const data = await resp.json();
     return NextResponse.json(data);
   } catch (e) {
-    console.error('strategy GET error:', e);
-    return NextResponse.json({ error: 'Failed to fetch strategy info' }, { status: 500 });
+    console.error('cash GET error:', e);
+    return NextResponse.json({ error: 'Failed to fetch cash info' }, { status: 500 });
   }
 }
 
-// POST /api/strategy?action=...&id=... — 转发多种 POST 操作
-// action 支持:
-//   - create (默认)       → POST /api/strategy/versions (创建新策略版本)
-//   - activate&id=xxx     → POST /api/strategy/versions/{id}/activate
-//   - snapshot            → POST /api/strategy/snapshot (冻结计算输入快照)
+// POST /api/cash?action=transfer|reverse — 转发到 data-service cash router
 // body 透传 (JSON)
 export async function POST(request: Request) {
   try {
     await ensureDataServiceRunning();
     const { searchParams } = new URL(request.url);
-    const action = searchParams.get('action') || 'create';
-    const id = searchParams.get('id') || '';
+    const action = searchParams.get('action') || 'transfer';
 
     let endpoint: string;
     switch (action) {
-      case 'activate':
-        if (!id) {
-          return NextResponse.json({ error: 'Missing id param' }, { status: 400 });
-        }
-        endpoint = `/api/strategy/versions/${encodeURIComponent(id)}/activate`;
+      case 'reverse':
+        endpoint = '/api/cash/reverse';
         break;
-      case 'snapshot':
-        endpoint = '/api/strategy/snapshot';
-        break;
-      case 'create':
+      case 'transfer':
       default:
-        endpoint = '/api/strategy/versions';
+        endpoint = '/api/cash/transfer';
         break;
     }
 
@@ -94,7 +92,7 @@ export async function POST(request: Request) {
     const data = await resp.json();
     return NextResponse.json(data);
   } catch (e) {
-    console.error('strategy POST error:', e);
-    return NextResponse.json({ error: 'Failed to perform strategy action' }, { status: 500 });
+    console.error('cash POST error:', e);
+    return NextResponse.json({ error: 'Failed to perform cash action' }, { status: 500 });
   }
 }

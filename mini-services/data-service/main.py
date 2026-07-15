@@ -18,6 +18,7 @@ from routers import (
     backtest,
     cached,
     calculate,
+    cash,
     data_quality,
     data_source,
     execution,
@@ -25,6 +26,7 @@ from routers import (
     macro,
     portfolio,
     refresh,
+    release,
     strategy,
 )
 from scheduler.jobs import setup_scheduler
@@ -236,8 +238,10 @@ def _init_db():
         )
 
         # V4.2: 初始化默认子账户(如果不存在)
+        # V5.0 E3: 新增 weekly_contribution_committed (本周承诺注资, 待分配)
         for acct_type in ("daily_cash", "weekly_unallocated_cash", "rebalance_equity_reserve",
-                          "qdii_pending_cash_sp500", "qdii_pending_cash_nasdaq", "manual_cash"):
+                          "qdii_pending_cash_sp500", "qdii_pending_cash_nasdaq", "manual_cash",
+                          "weekly_contribution_committed"):
             conn.execute(
                 "INSERT OR IGNORE INTO cash_subaccount (account_type, balance, counts_as_equity_base, description, updated_at) VALUES (?, 0, ?, ?, ?)",
                 (acct_type,
@@ -246,9 +250,56 @@ def _init_db():
                   "rebalance_equity_reserve": "再平衡权益备用金",
                   "qdii_pending_cash_sp500": "标普500QDII挂起资金",
                   "qdii_pending_cash_nasdaq": "纳斯达克QDII挂起资金",
-                  "manual_cash": "用户手动指定现金"}.get(acct_type, ""),
+                  "manual_cash": "用户手动指定现金",
+                  "weekly_contribution_committed": "本周承诺注资(待分配)"}.get(acct_type, ""),
                  datetime.now().isoformat())
             )
+
+        # V5.0 E3: cash_ledger 表加字段(成对借贷关联)
+        #   transfer_id  — 同一笔转账的两条流水共享同一 ID
+        #   entry_type   — debit / credit
+        #   reference_id — 业务关联 ID(如 calculation_id / execution_id)
+        try:
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(cash_ledger)").fetchall()}
+            new_cols = [
+                ("transfer_id", "TEXT"),
+                ("entry_type", "TEXT"),
+                ("reference_id", "TEXT"),
+            ]
+            for col, coltype in new_cols:
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE cash_ledger ADD COLUMN {col} {coltype}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cash_ledger_transfer "
+                "ON cash_ledger(transfer_id)"
+            )
+        except Exception as e:
+            logger.warning(f"[STARTUP] cash_ledger schema upgrade failed (non-blocking): {e}")
+
+        # V5.0 E5: release_plan 表 — QDII 挂起释放状态机
+        #   状态: idle -> releasing -> paused -> releasing -> completed
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS release_plan (
+                id TEXT PRIMARY KEY,
+                plan_type TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'idle',
+                weeks_total INTEGER DEFAULT 8,
+                weeks_remaining INTEGER DEFAULT 8,
+                balance REAL NOT NULL DEFAULT 0,
+                weekly_amount REAL DEFAULT 0,
+                target_etf TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                paused_reason TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_release_plan_state
+                ON release_plan(state, plan_type);
+            CREATE INDEX IF NOT EXISTS idx_release_plan_account
+                ON release_plan(account_id);
+            """
+        )
 
         # V5.0 E1: 策略版本与冻结快照 — 3张新表
         conn.executescript(
@@ -423,6 +474,9 @@ app.include_router(execution.router)
 app.include_router(portfolio.router)
 # V5.0 Sprint1 E1: 策略版本与冻结快照 router
 app.include_router(strategy.router)
+# V5.0 Sprint2 E3/E5: 现金账本守恒 + QDII 释放状态机
+app.include_router(cash.router)
+app.include_router(release.router)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import { RedLineAuditCard } from '@/components/red-line-audit-card';
 import { HistoryLogCard } from '@/components/history-log-card';
 import { DataTrustCard } from '@/components/data-trust-card';
 import { CashSubaccountFlowCard } from '@/components/cash-subaccount-flow-card';
+import { CashLedgerConservationCard } from '@/components/cash-ledger-conservation-card';
 import { PortfolioPerformanceCard } from '@/components/portfolio-performance-card';
 import { ExecutionConfirmDialog } from '@/components/execution-confirm-dialog';
 import { Button } from '@/components/ui/button';
@@ -403,6 +404,9 @@ export function Overview() {
 
       {/* V4.2 §9 现金子账户流向卡 — 结论卡下方、持仓明细表上方,仅 advice 存在时渲染 */}
       {hasHoldings && advice && <CashSubaccountFlowCard advice={advice} />}
+
+      {/* V5.0 E3 现金账本与守恒校验卡 — 子账户流向卡下方,展示7个子账户余额 + 总量/逐账户守恒校验 */}
+      {hasHoldings && <CashLedgerConservationCard />}
 
       {/* Section 3: Unified Holdings + Monitoring + Advice Table */}
       {hasHoldings && (

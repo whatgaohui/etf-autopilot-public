@@ -150,6 +150,15 @@ export function WeeklyConclusionCard({
   const engineVersion = advice.engineVersion || '';
   const calculationId = advice.calculationId || '';
   const dataTime = advice.dataSnapshot?.marketDataCacheTime || advice.calculatedAt || '';
+  // V5.0 E1/E4: 策略版本号 + 确定性复算指纹（从 dataSnapshot 读取）
+  const dataSnapshot = (advice.dataSnapshot ?? {}) as {
+    strategyVersion?: unknown;
+    inputsHash?: unknown;
+  };
+  const strategyVersion =
+    typeof dataSnapshot.strategyVersion === 'string' ? dataSnapshot.strategyVersion : '';
+  const inputsHash =
+    typeof dataSnapshot.inputsHash === 'string' ? dataSnapshot.inputsHash : '';
   // V4.1 S4-T3: 从 dataQualitySummary 聚合数据质量得分
   const qualityScore = extractQualityScore(advice);
   // V4.2 资金流字段(策略书§4-§9)
@@ -575,23 +584,51 @@ export function WeeklyConclusionCard({
 
         {/* Footer: calculationId + data time + quality score */}
         <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/50">
-          <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono min-w-0 flex-1">
-            <span className="text-muted-foreground/60 shrink-0">计算批次</span>
-            <span
-              className="truncate max-w-[180px] sm:max-w-[300px] text-muted-foreground"
-              title={calculationId}
-            >
-              {calculationId || '—'}
-            </span>
-            {qualityScore !== null && (
-              <Badge
-                variant="outline"
-                className={`text-[10px] px-1.5 py-0 rounded-full font-mono shrink-0 inline-flex items-center gap-1 ${getScoreBadgeClass(qualityScore)}`}
-                title={`数据质量得分 ${qualityScore} 分`}
+          <div className="flex flex-col gap-1 min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono min-w-0">
+              <span className="text-muted-foreground/60 shrink-0">计算批次</span>
+              <span
+                className="truncate max-w-[180px] sm:max-w-[300px] text-muted-foreground"
+                title={calculationId}
               >
-                <ShieldCheck className="size-3" />
-                数据质量 {qualityScore.toFixed(1)} 分
-              </Badge>
+                {calculationId || '—'}
+              </span>
+              {qualityScore !== null && (
+                <Badge
+                  variant="outline"
+                  className={`text-[10px] px-1.5 py-0 rounded-full font-mono shrink-0 inline-flex items-center gap-1 ${getScoreBadgeClass(qualityScore)}`}
+                  title={`数据质量得分 ${qualityScore} 分`}
+                >
+                  <ShieldCheck className="size-3" />
+                  数据质量 {qualityScore.toFixed(1)} 分
+                </Badge>
+              )}
+            </div>
+            {/* V5.0 E1/E4: 引擎 / 策略版本 / 复算指纹 */}
+            {(engineVersion || strategyVersion || inputsHash) && (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground/70 font-mono">
+                {engineVersion && (
+                  <span>
+                    引擎: <span className="text-muted-foreground">{engineVersion}</span>
+                  </span>
+                )}
+                {strategyVersion && (
+                  <>
+                    <span className="text-muted-foreground/40">|</span>
+                    <span>
+                      策略: <span className="text-muted-foreground">{strategyVersion}</span>
+                    </span>
+                  </>
+                )}
+                {inputsHash && (
+                  <>
+                    <span className="text-muted-foreground/40">|</span>
+                    <span title="V5.0 确定性复算指纹（相同输入→相同 hash）">
+                      复算指纹: <span className="text-muted-foreground">{inputsHash}</span>
+                    </span>
+                  </>
+                )}
+              </div>
             )}
           </div>
           {dataTime && (

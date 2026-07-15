@@ -31,6 +31,7 @@ import {
   Bell,
   GitBranch,
   Zap,
+  History,
   AlertTriangle,
   ChevronDown,
   ChevronRight,
@@ -43,6 +44,9 @@ import {
   Eye,
   HardDrive,
   LineChart,
+  Timer,
+  Pause,
+  Play,
 } from 'lucide-react'
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -126,6 +130,10 @@ import {
   getFetchLogs,
   updateThreshold,
   getQualitySummary,
+  // V5.0 E1 策略版本管理
+  getStrategyVersions,
+  activateStrategyVersion,
+  type StrategyVersion,
   // V4.2 P5-C: 数据采集服务控制面板所需 API
   getDataSourceStatus as getDataSourceStatusApi,
   getMacroTemperature,
@@ -154,6 +162,11 @@ import {
   // V5.0 回测验证
   runBacktest as runBacktestApi,
   type BacktestResult,
+  // V5.0 E5 QDII 释放计划
+  getReleasePlans,
+  pauseReleasePlan,
+  resumeReleasePlan,
+  type ReleasePlan,
 } from '@/lib/api'
 
 // V5.0 回测图表（Recharts）— 别名避免与 lucide-react LineChart 冲突
@@ -485,6 +498,209 @@ async function refreshMarketData(): Promise<{ success: boolean; message: string 
   const res = await fetch('/api/data', { method: 'POST' })
   if (!res.ok) throw new Error('Failed to refresh data')
   return res.json()
+}
+
+// ─── V5.0 E1: 策略版本管理 ───────────────────────────────────────────────────
+
+function getStatusBadge(status: StrategyVersion['status']) {
+  switch (status) {
+    case 'active':
+      return (
+        <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800">
+          <CheckCircle2 className="h-3 w-3 mr-0.5" />
+          活跃
+        </Badge>
+      )
+    case 'draft':
+      return (
+        <Badge className="bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800">
+          <AlertCircle className="h-3 w-3 mr-0.5" />
+          草稿
+        </Badge>
+      )
+    case 'retired':
+      return (
+        <Badge className="bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-100 dark:bg-slate-900/30 dark:text-slate-400 dark:border-slate-800">
+          <Ban className="h-3 w-3 mr-0.5" />
+          已退役
+        </Badge>
+      )
+    default:
+      return <Badge variant="outline">{status}</Badge>
+  }
+}
+
+// 提取参数摘要：目标比例 / 周预算 / 分桶比例
+function renderParameterSummary(parameters: Record<string, unknown>) {
+  const targetRatios = parameters.target_ratios as Record<string, number> | undefined
+  const weeklyBudget = parameters.weekly_budget as number | undefined
+  const baseBucketRatio = parameters.base_bucket_ratio as number | undefined
+  const valueBucketRatio = parameters.value_bucket_ratio as number | undefined
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+      {weeklyBudget !== undefined && (
+        <span>
+          周预算 <span className="font-mono font-medium text-foreground">{Math.round(weeklyBudget).toLocaleString()}</span>
+        </span>
+      )}
+      {baseBucketRatio !== undefined && valueBucketRatio !== undefined && (
+        <span>
+          桶比例 <span className="font-mono font-medium text-foreground">基础{Math.round(baseBucketRatio * 100)}% / 估值{Math.round(valueBucketRatio * 100)}%</span>
+        </span>
+      )}
+      {targetRatios && Object.keys(targetRatios).length > 0 && (
+        <span className="font-mono">
+          {Object.entries(targetRatios)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([code, ratio]) => `${code}:${Math.round(ratio * 100)}%`)
+            .join(' · ')}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function StrategyVersionSection() {
+  const queryClient = useQueryClient()
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['strategy-versions'],
+    queryFn: getStrategyVersions,
+  })
+
+  const activateMutation = useMutation({
+    mutationFn: (id: string) => activateStrategyVersion(id),
+    onSuccess: () => {
+      toast.success('策略版本已激活')
+      queryClient.invalidateQueries({ queryKey: ['strategy-versions'] })
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || '激活失败，请重试')
+    },
+  })
+
+  const versions: StrategyVersion[] = data?.versions ?? []
+  const activeVersion = versions.find((v) => v.status === 'active')
+  const historyVersions = versions.filter((v) => v.status !== 'active')
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <GitBranch className="size-5 text-muted-foreground" />
+          <CardTitle className="text-base">策略版本管理</CardTitle>
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+            V5.0
+          </Badge>
+        </div>
+        <CardDescription className="text-xs">
+          管理投资策略版本（draft / active / retired）。同一时间仅允许一个 active 版本；retired 版本不可再激活。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <Skeleton className="h-32 w-full rounded-md" />
+        ) : isError ? (
+          <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+            <AlertCircle className="size-4" />
+            <span>策略版本加载失败</span>
+          </div>
+        ) : versions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 p-6 rounded-md border border-dashed bg-muted/20 text-center">
+            <GitBranch className="h-6 w-6 text-muted-foreground/50" />
+            <div className="text-sm font-medium text-muted-foreground">暂无策略版本</div>
+            <div className="text-xs text-muted-foreground/70">
+              后端未检测到任何策略版本，请在数据服务初始化时插入默认 V5.0 版本
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* 当前活跃版本 */}
+            {activeVersion && (
+              <div className="rounded-lg border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50/40 dark:bg-emerald-950/20 p-4 space-y-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[11px] text-muted-foreground">当前活跃版本</span>
+                    <span className="font-mono text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                      {activeVersion.version}
+                    </span>
+                    {getStatusBadge(activeVersion.status)}
+                  </div>
+                  {activeVersion.effective_at && (
+                    <span className="text-[11px] text-muted-foreground font-mono">
+                      生效 {formatDateTime(activeVersion.effective_at)}
+                    </span>
+                  )}
+                </div>
+                {activeVersion.doc_ref && (
+                  <div className="text-[11px] text-muted-foreground">
+                    文档: <span className="font-mono">{activeVersion.doc_ref}</span>
+                  </div>
+                )}
+                <div className="pt-1">{renderParameterSummary(activeVersion.parameters)}</div>
+              </div>
+            )}
+
+            {/* 历史版本列表 */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <History className="h-3.5 w-3.5" />
+                <span>历史版本（{historyVersions.length}）</span>
+              </div>
+              {historyVersions.length === 0 ? (
+                <div className="text-xs text-muted-foreground/70 px-2 py-3 rounded-md border border-dashed bg-muted/10">
+                  暂无 draft / retired 版本
+                </div>
+              ) : (
+                <div className="max-h-96 overflow-y-auto space-y-2 pr-1 [scrollbar-width:thin]">
+                  {historyVersions.map((v) => (
+                    <div
+                      key={v.id}
+                      className="rounded-md border border-border/60 bg-card/40 px-3 py-2 flex flex-col gap-1.5 min-w-0"
+                    >
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono text-sm font-medium">{v.version}</span>
+                          {getStatusBadge(v.status)}
+                          {v.created_at && (
+                            <span className="text-[10px] text-muted-foreground/70 font-mono">
+                              {formatDateTime(v.created_at)}
+                            </span>
+                          )}
+                        </div>
+                        {v.status === 'draft' && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            disabled={activateMutation.isPending}
+                            onClick={() => activateMutation.mutate(v.id)}
+                          >
+                            {activateMutation.isPending && activateMutation.variables === v.id ? (
+                              <Loader2 className="size-3 animate-spin mr-0.5" />
+                            ) : (
+                              <Zap className="size-3 mr-0.5" />
+                            )}
+                            激活
+                          </Button>
+                        )}
+                      </div>
+                      {v.created_reason && (
+                        <div className="text-[11px] text-muted-foreground/80 truncate" title={v.created_reason}>
+                          原因: {v.created_reason}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 // ─── Section 1: Target Allocation ────────────────────────────────────────────
@@ -4406,11 +4622,13 @@ export default function SettingsTab() {
           <DataSourceSection />
           <DataQualityConfigSection />
           <BacktestSection />
+          <ReleasePlanSection />
           <AdminSection />
         </>
       )}
       {activeCategory === 'strategy' && (
         <>
+          <StrategyVersionSection />
           <TargetAllocationSection configs={etfConfigs} />
           <BlacklistSection configs={etfConfigs} />
           <WeeklyBudgetSection configs={systemConfigs} />
@@ -5302,6 +5520,242 @@ function BacktestSection() {
           <div className="h-32 flex flex-col items-center justify-center text-muted-foreground text-sm gap-2">
             <LineChart className="size-5 text-muted-foreground/60" />
             <span>设置参数后点击「运行回测」</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── V5.0 E5 QDII 释放计划 Section ──────────────────────────────────────────
+// 展示所有 release plan (idle/releasing/paused/completed), 支持 pause/resume 操作
+
+const RELEASE_STATE_BADGE: Record<
+  string,
+  { label: string; className: string }
+> = {
+  idle: {
+    label: 'idle',
+    className:
+      'text-sky-700 dark:text-sky-400 border-sky-300/70 dark:border-sky-700/50 bg-sky-100/40 dark:bg-sky-900/30',
+  },
+  releasing: {
+    label: 'releasing',
+    className:
+      'text-emerald-700 dark:text-emerald-400 border-emerald-300/70 dark:border-emerald-700/50 bg-emerald-100/40 dark:bg-emerald-900/30',
+  },
+  paused: {
+    label: 'paused',
+    className:
+      'text-amber-700 dark:text-amber-400 border-amber-300/70 dark:border-amber-700/50 bg-amber-100/40 dark:bg-amber-900/30',
+  },
+  completed: {
+    label: 'completed',
+    className:
+      'text-muted-foreground border-border bg-muted/40 dark:bg-muted/20',
+  },
+}
+
+function formatYuanFixed(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—'
+  return `¥${Math.round(v).toLocaleString('zh-CN')}`
+}
+
+function formatPlanDate(s: string | null | undefined): string {
+  if (!s) return '—'
+  const trimmed = s.length > 19 ? s.slice(0, 19) : s
+  return trimmed.replace('T', ' ')
+}
+
+function ReleasePlanSection() {
+  const queryClient = useQueryClient()
+
+  const { data, isLoading, isError, refetch } = useQuery<{ plans: ReleasePlan[] }>({
+    queryKey: ['release-plans'],
+    queryFn: getReleasePlans,
+    staleTime: 15_000,
+  })
+
+  const plans: ReleasePlan[] = data?.plans ?? []
+
+  const pauseMutation = useMutation({
+    mutationFn: (id: string) => pauseReleasePlan(id),
+    onSuccess: () => {
+      toast.success('已暂停释放计划')
+      queryClient.invalidateQueries({ queryKey: ['release-plans'] })
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || '暂停失败，请重试')
+    },
+  })
+
+  const resumeMutation = useMutation({
+    mutationFn: (id: string) => resumeReleasePlan(id),
+    onSuccess: () => {
+      toast.success('已恢复释放计划')
+      queryClient.invalidateQueries({ queryKey: ['release-plans'] })
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || '恢复失败，请重试')
+    },
+  })
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Timer className="h-4 w-4 text-amber-600" />
+              QDII释放计划
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                V5.0 E5
+              </Badge>
+            </CardTitle>
+            <CardDescription className="text-xs mt-1">
+              管理 QDII 溢价恢复后的资金分批释放计划（idle → releasing → paused → releasing → completed）。支持暂停 / 恢复正在进行的释放。
+            </CardDescription>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => refetch()}
+            disabled={isLoading}
+            className="h-8 text-xs"
+          >
+            <RefreshCw className={`size-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            刷新
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-10 w-full rounded" />
+            <Skeleton className="h-10 w-full rounded" />
+            <Skeleton className="h-10 w-full rounded" />
+          </div>
+        )}
+
+        {isError && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>加载失败</AlertTitle>
+            <AlertDescription className="text-xs">
+              释放计划数据加载失败，请稍后重试。
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!isLoading && !isError && plans.length === 0 && (
+          <div className="h-32 flex flex-col items-center justify-center text-muted-foreground text-sm gap-2">
+            <Timer className="size-5 text-muted-foreground/60" />
+            <span>暂无释放计划</span>
+          </div>
+        )}
+
+        {!isLoading && !isError && plans.length > 0 && (
+          <div className="rounded-md border overflow-hidden">
+            <Table>
+              <TableHeader className="bg-muted/60">
+                <TableRow>
+                  <TableHead className="text-xs">计划类型</TableHead>
+                  <TableHead className="text-xs">状态</TableHead>
+                  <TableHead className="text-xs text-right">余额</TableHead>
+                  <TableHead className="text-xs text-right">剩余周数</TableHead>
+                  <TableHead className="text-xs text-right">每周释放</TableHead>
+                  <TableHead className="text-xs">目标ETF</TableHead>
+                  <TableHead className="text-xs text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {plans.map((p) => {
+                  const badge = RELEASE_STATE_BADGE[p.state] ?? {
+                    label: p.state || '—',
+                    className:
+                      'text-muted-foreground border-border bg-muted/40 dark:bg-muted/20',
+                  }
+                  const isReleasing = p.state === 'releasing'
+                  const isPaused = p.state === 'paused'
+                  return (
+                    <TableRow key={p.id}>
+                      <TableCell className="text-xs font-medium">
+                        <div>{p.plan_type || '—'}</div>
+                        <div className="text-[10px] text-muted-foreground/70 mt-0.5 font-mono">
+                          {p.id.length > 12 ? `${p.id.slice(0, 12)}…` : p.id}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] px-1.5 py-0 rounded-full font-mono ${badge.className}`}
+                        >
+                          {badge.label}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs font-mono text-right tabular-nums">
+                        {formatYuanFixed(p.balance)}
+                      </TableCell>
+                      <TableCell className="text-xs font-mono text-right tabular-nums">
+                        <span className="text-muted-foreground">
+                          {p.weeks_remaining ?? 0}
+                          <span className="text-muted-foreground/60"> / {p.weeks_total ?? 0}</span>
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-xs font-mono text-right tabular-nums text-amber-700 dark:text-amber-400">
+                        {formatYuanFixed(p.weekly_amount)}
+                      </TableCell>
+                      <TableCell className="text-xs font-mono">
+                        {p.target_etf || '—'}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {isReleasing && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            disabled={pauseMutation.isPending}
+                            onClick={() => pauseMutation.mutate(p.id)}
+                          >
+                            {pauseMutation.isPending && pauseMutation.variables === p.id ? (
+                              <Loader2 className="size-3 mr-1 animate-spin" />
+                            ) : (
+                              <Pause className="size-3 mr-1" />
+                            )}
+                            暂停
+                          </Button>
+                        )}
+                        {isPaused && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            disabled={resumeMutation.isPending}
+                            onClick={() => resumeMutation.mutate(p.id)}
+                          >
+                            {resumeMutation.isPending && resumeMutation.variables === p.id ? (
+                              <Loader2 className="size-3 mr-1 animate-spin" />
+                            ) : (
+                              <Play className="size-3 mr-1" />
+                            )}
+                            恢复
+                          </Button>
+                        )}
+                        {!isReleasing && !isPaused && (
+                          <span className="text-[10px] text-muted-foreground/50">—</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+
+        {!isLoading && !isError && plans.length > 0 && (
+          <div className="text-[10px] text-muted-foreground/60">
+            最近更新: {formatPlanDate(plans[0]?.updated_at)}
           </div>
         )}
       </CardContent>
