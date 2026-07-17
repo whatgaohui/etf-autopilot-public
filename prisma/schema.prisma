@@ -1,8 +1,8 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// ============================================================
+// ETF Autopilot V5 — Unified Prisma Schema (SQLite)
+// All monetary amounts are stored in 分 (cents) as Int to avoid
+// floating-point precision issues. 1 RMB = 100 分.
+// ============================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -13,20 +13,579 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+// ============================================================
+// Enums (stored as TEXT in SQLite)
+// ============================================================
+
+/// 策略版本状态
+enum StrategyStatus {
+  draft
+  active
+  retired
 }
 
-model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+/// 现金子账户类型
+enum CashAccountType {
+  daily_cash                      // 日常现金（不计入权益基准）
+  weekly_unallocated_cash         // 本周未分配权益现金
+  rebalance_equity_reserve        // 再平衡权益备用金
+  qdii_pending_cash_sp500         // 标普500 QDII 挂起资金
+  qdii_pending_cash_nasdaq        // 纳斯达克 QDII 挂起资金
+  manual_cash                     // 用户手动指定现金（不计入权益基准）
+  weekly_contribution_committed   // 本周承诺注资（待分配）
+}
+
+/// 释放计划状态机: idle → releasing ↔ paused → completed
+enum ReleasePlanState {
+  idle
+  releasing
+  paused
+  completed
+}
+
+/// 释放计划类型
+enum ReleasePlanType {
+  qdii_premium         // QDII 溢价释放
+  rebalance_reserve    // 再平衡备用金释放
+}
+
+/// 执行单方向
+enum OrderSide {
+  buy
+  sell
+}
+
+/// 执行模式
+enum ExecutionMode {
+  immediate        // 立即执行
+  staged           // 分批执行
+  wait_pullback    // 等待回撤
+  base_only        // 仅基础仓
+}
+
+/// 执行单完整状态机
+enum OrderStatus {
+  draft              // 草稿
+  calculating         // 计算中
+  blocked             // 被阻断
+  ready_for_review    // 待审核
+  confirmed           // 已确认
+  rejected            // 已拒绝
+  expired             // 已过期
+  partially_executed  // 部分成交
+  executed            // 已执行
+  cancelled           // 已取消
+  reconciled          // 已对账
+}
+
+/// 现金流水借贷方向
+enum EntryType {
+  debit
+  credit
+}
+
+/// 现金流水状态
+enum CashLedgerStatus {
+  active
+  reversed
+}
+
+/// 数据质量五态门禁
+enum QualityStatus {
+  valid
+  degraded
+  stale
+  conflict
+  missing
+}
+
+/// 数据源类型
+enum DataSourceType {
+  api
+  scraper
+  manual
+  index_direct
+}
+
+// ============================================================
+// 1. EtfConfig — ETF 基础配置
+// ============================================================
+
+model EtfConfig {
+  id                String   @id @default(cuid())
+  /// ETF代码，如 "510300"
+  code              String   @unique
+  /// ETF名称，如 "沪深300ETF"
+  name              String
+  /// 大类: domestic / overseas / commodity / cash
+  category          String
+  /// 目标占比（万分之），如 2000 表示 20.00%
+  targetRatioBps    Int      @default(0)
+  /// 是否在黑名单
+  isBlacklisted     Boolean  @default(false)
+  /// 是否为定投标的
+  isInvestmentTarget Boolean @default(true)
+  /// 排序权重
+  sortOrder         Int      @default(0)
+  /// 资产大类: domestic | overseas | commodity | cash
+  assetClass        String   @default("domestic")
+  /// 角色: core | satellite | cash_pool | blacklist
+  role              String   @default("core")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("etf_config")
+}
+
+// ============================================================
+// 2. HoldingSnapshot — 每周持仓快照
+// ============================================================
+
+model HoldingSnapshot {
+  id              String   @id @default(cuid())
+  /// 快照日期
+  snapshotDate    DateTime
+  /// 关联ETF
+  etfCode         String
+  /// 持有份额（整数，实际份额×10000 保留4位精度）
+  shares          Int      @default(0)
+  /// 成本价（分/万份，即 cost_per_10k_shares）
+  costPer10k      Int      @default(0)
+  /// 市值（分）
+  marketValueFen  Int      @default(0)
+  /// 当前占总资产比例（BPS，万分之）
+  currentRatioBps Int      @default(0)
+  /// 数据来源: ocr | manual | auto
+  source          String   @default("manual")
+  /// OCR 置信度 0-10000（万分之）
+  ocrConfidence   Int?
+  /// 是否经过人工校准
+  isManualCorrected Boolean @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([etfCode, snapshotDate])
+  @@index([snapshotDate])
+  @@map("holding_snapshot")
+}
+
+// ============================================================
+// 3. StrategyVersion — 策略版本管理
+// ============================================================
+
+model StrategyVersion {
+  id             String         @id @default(cuid())
+  /// 版本号，如 "v5.0"
+  version        String         @unique
+  /// 状态: draft / active / retired
+  status         StrategyStatus @default(draft)
+  /// 策略参数 JSON（含 target_ratios, weekly_budget, base_bucket_ratio 等）
+  parameters     String         // JSON string
+  /// 策略文档引用
+  docRef         String?
+  /// 生效时间
+  effectiveAt    DateTime?
+  /// 创建原因
+  createdReason  String?
+  /// 确认人
+  confirmedBy    String         @default("user")
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  /// 该策略版本下的所有计算快照
+  calculationSnapshots CalculationSnapshot[]
+
+  @@index([status, createdAt])
+  @@map("strategy_version")
+}
+
+// ============================================================
+// 4. CalculationSnapshot — 计算冻结快照
+// ============================================================
+
+model CalculationSnapshot {
+  id                 String          @id @default(cuid())
+  /// 关联计算ID（业务ID，如 "calc-2026-07-14"）
+  calculationId      String          @unique
+  /// 使用的策略版本
+  strategyVersionId  String
+  /// 持仓数据哈希（确定性验证）
+  holdingsHash       String
+  /// 现金数据哈希
+  cashHash           String
+  /// 市场数据哈希
+  marketHash         String
+  /// 冻结时间
+  frozenAt           DateTime        @default(now())
+
+  strategyVersion    StrategyVersion @relation(fields: [strategyVersionId], references: [id])
+
+  /// 基于此快照产生的执行单
+  executionOrders    ExecutionOrder[]
+
+  @@index([strategyVersionId])
+  @@index([calculationId])
+  @@map("calculation_snapshot")
+}
+
+// ============================================================
+// 5. CashSubaccount — 现金子账户（7 种类型）
+// ============================================================
+
+model CashSubaccount {
+  id                   String           @id @default(cuid())
+  /// 账户类型（唯一）
+  accountType          CashAccountType  @unique
+  /// 余额（分）
+  balanceFen           Int              @default(0)
+  /// 是否计入权益配置基准 (EAB)
+  countsAsEquityBase   Boolean          @default(true)
+  /// 描述
+  description          String?
+  updatedAt            DateTime         @updatedAt
+
+  @@map("cash_subaccount")
+}
+
+// ============================================================
+// 6. CashLedger — 现金台账（复式记账）
+// ============================================================
+
+model CashLedger {
+  id              String            @id @default(cuid())
+  /// 借方账户类型
+  debitAccount    CashAccountType
+  /// 贷方账户类型
+  creditAccount   CashAccountType
+  /// 金额（分，必须 > 0）
+  amountFen       Int
+  /// 同一笔转账的两条流水共享此 ID
+  transferId      String?
+  /// 借贷方向
+  entryType       EntryType
+  /// 业务关联 ID（如 calculation_id / execution_id）
+  referenceId     String?
+  /// 业务发生时间
+  occurredAt      DateTime          @default(now())
+  /// 流水状态: active / reversed
+  status          CashLedgerStatus  @default(active)
+  createdAt       DateTime          @default(now())
+
+  @@index([debitAccount, status])
+  @@index([creditAccount, status])
+  @@index([transferId])
+  @@index([referenceId, createdAt])
+  @@map("cash_ledger")
+}
+
+// ============================================================
+// 7. ReleasePlan — QDII/再平衡释放计划
+// ============================================================
+
+model ReleasePlan {
+  id               String           @id @default(cuid())
+  /// 计划类型
+  planType         ReleasePlanType
+  /// 关联子账户
+  accountId        String
+  /// 状态机
+  state            ReleasePlanState @default(idle)
+  /// 总释放周数
+  weeksTotal       Int              @default(8)
+  /// 剩余周数
+  weeksRemaining   Int              @default(8)
+  /// 当前余额（分）
+  balanceFen       Int              @default(0)
+  /// 每周计划释放额（分）
+  weeklyAmountFen  Int              @default(0)
+  /// 目标ETF代码
+  targetEtf        String?
+  /// 暂停原因
+  pausedReason     String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([state, planType])
+  @@index([accountId])
+  @@map("release_plan")
+}
+
+// ============================================================
+// 8. ExecutionOrder — 执行单（完整状态机）
+// ============================================================
+
+model ExecutionOrder {
+  id                String          @id @default(cuid())
+  /// 关联的计算快照
+  calculationId     String
+  /// 关联的冻结快照
+  snapshotId        String?
+  /// ETF代码
+  etfCode           String
+  /// 买卖方向
+  side              OrderSide
+  /// 计划金额（分）
+  plannedAmountFen  Int             @default(0)
+  /// 计划份额（整数×10000 保留4位精度）
+  plannedShares     Int             @default(0)
+  /// 执行模式
+  executionMode     ExecutionMode   @default(immediate)
+  /// 当前状态
+  status            OrderStatus     @default(draft)
+  /// 拒绝/取消原因
+  rejectReason      String?
+  /// 实际执行总额（分）
+  actualAmountFen   Int?
+  /// 实际执行总份额
+  actualShares      Int?
+  /// 创建时间
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  calculationSnapshot CalculationSnapshot? @relation(fields: [snapshotId], references: [id])
+
+  /// 该执行单的所有成交记录
+  fills             ExecutionFill[]
+
+  @@index([calculationId])
+  @@index([etfCode, status])
+  @@index([status, createdAt])
+  @@map("execution_order")
+}
+
+// ============================================================
+// 9. ExecutionFill — 成交回填
+// ============================================================
+
+model ExecutionFill {
+  id               String   @id @default(cuid())
+  /// 关联执行单
+  orderId          String
+  /// 成交价（分/万份，即 price × 10000 × 100）
+  priceFen         Int
+  /// 成交份额（整数×10000）
+  shares           Int
+  /// 成交金额（分）
+  amountFen        Int
+  /// 手续费（分）
+  feeFen           Int      @default(0)
+  /// 成交时间
+  executedAt       DateTime
+  /// 幂等键（防止重复回填）
+  idempotencyKey   String   @unique
+  createdAt        DateTime @default(now())
+
+  executionOrder   ExecutionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("execution_fill")
+}
+
+// ============================================================
+// 10. ManualOverride — 人工覆盖记录
+// ============================================================
+
+model ManualOverride {
+  id           String   @id @default(cuid())
+  /// 被覆盖的规则/参数名
+  rule         String
+  /// 覆盖前的值
+  beforeValue  String?
+  /// 覆盖后的值
+  afterValue   String?
+  /// 覆盖原因
+  reason       String?
+  /// 生效时间
+  effectiveAt  DateTime
+  /// 过期时间
+  expiresAt    DateTime?
+  /// 确认人
+  confirmedBy  String   @default("user")
+  createdAt    DateTime @default(now())
+
+  @@index([rule, effectiveAt])
+  @@map("manual_override")
+}
+
+// ============================================================
+// 11. CalculationLog — 计算审计日志
+// ============================================================
+
+model CalculationLog {
+  id                    String   @id @default(cuid())
+  /// 计算ID（业务ID）
+  calculationId         String   @unique
+  /// 使用的策略版本号
+  strategyVersion       String?
+  /// 引擎版本号
+  engineVersion         String   @default("v5.0")
+  /// 输入数据哈希（确定性验证）
+  inputsHash            String
+  /// 权益配置基准 EAB（分）
+  eabFen                Int
+  /// 本周预算（分）
+  budgetFen             Int
+  /// 总分配金额（分）
+  totalAllocatedFen     Int      @default(0)
+  /// 总再平衡金额（分）
+  totalRebalancedFen    Int      @default(0)
+  /// 总未分配金额（分）
+  totalUnallocatedFen   Int      @default(0)
+  /// 未分配资金去向
+  cashDestination       String?
+  /// 规则命中摘要 JSON
+  rulesHitSummary       String?  // JSON
+  /// 数据质量摘要 JSON
+  dataQualitySummary    String?  // JSON
+  /// 完整计算结果 JSON
+  resultsJson           String?  // JSON
+  /// AI 解释检查结果
+  aiExplanationResult   String?
+  /// 完整输入快照 JSON
+  inputJson             String?  // JSON
+  createdAt             DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("calculation_log")
+}
+
+// ============================================================
+// 12. RuleConfig — 规则配置
+// ============================================================
+
+model RuleConfig {
+  id                String   @id @default(cuid())
+  /// 规则分组: buy | pause | rebalance | data_quality | cash_pool
+  ruleGroup         String
+  /// 规则名称
+  ruleName          String
+  /// 规则值（参数）
+  ruleValue         String
+  /// 描述
+  description       String?
+  /// 规则类型: veto / reduce / boost
+  ruleType          String   @default("reduce")
+  /// 触发条件
+  triggerCondition  String?
+  /// 阈值参数（BPS或万分之）
+  thresholdValue    Int      @default(0)
+  /// 阈值上限
+  thresholdValueMax Int?
+  /// 适用范围: all | qdii | specific
+  applicableScope   String   @default("all")
+  /// 具体适用的ETF代码（逗号分隔）
+  applicableCodes   String?
+  /// 触发指标: pe_percentile | premium_today | deviation | dividend_yield_percentile
+  conditionMetric   String?
+  /// 分位窗口: 1y | 3y | 5y | 10y | all
+  percentileWindow  String?
+  /// 操作符: gt | lt | between | eq
+  operator          String?
+  /// 优先级（数字越小越优先）
+  priority          Int      @default(100)
+  /// 是否启用
+  isEnabled         Boolean  @default(true)
+  /// 排序
+  sortOrder         Int      @default(0)
+  /// 效果描述
+  effect            String?
+  /// 前端展示文本
+  displayText       String?
+  /// 策略文档引用
+  strategyDocRef    String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([ruleGroup, isEnabled])
+  @@map("rule_config")
+}
+
+// ============================================================
+// 13. SystemConfig — 系统配置
+// ============================================================
+
+model SystemConfig {
+  id          String   @id @default(cuid())
+  /// 配置键名
+  configKey   String   @unique
+  /// 配置值
+  configValue String
+  /// 配置说明
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("system_config")
+}
+
+// ============================================================
+// 14. DataSource — 数据源注册表
+// ============================================================
+
+model DataSource {
+  id              String         @id @default(cuid())
+  /// 数据源标识（适配器名）
+  sourceName      String         @unique
+  /// 数据源类型
+  sourceType      DataSourceType
+  /// 是否为主数据源
+  isPrimary       Boolean        @default(false)
+  /// 是否启用
+  isEnabled       Boolean        @default(true)
+  /// 优先级（数字越小越优先）
+  priority        Int            @default(100)
+  /// 每分钟限流次数
+  rateLimitPerMin Int            @default(60)
+  /// 支持的指标 JSON array
+  supportedMetrics String?       // JSON
+  /// 质量评分 0-100
+  qualityScore    Int            @default(80)
+  /// 状态: healthy / degraded / down
+  healthStatus    String         @default("healthy")
+  /// 描述
+  description     String?
+  /// 官网
+  homepage        String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([isPrimary, isEnabled])
+  @@map("data_source")
+}
+
+// ============================================================
+// 15. DataQualityLog — 数据质量日志
+// ============================================================
+
+model DataQualityLog {
+  id             String         @id @default(cuid())
+  /// ETF代码
+  etfCode        String
+  /// 指标名称: pe_percentile | premium_today | nav | dividend_yield
+  metricName     String
+  /// 质量状态五态
+  qualityStatus  QualityStatus
+  /// 综合质量分 0-100
+  score          Int            @default(0)
+  /// 新鲜度分 0-25
+  freshnessScore Int?
+  /// 一致性分 0-30
+  consistencyScore Int?
+  /// 完整性分 0-20
+  completenessScore Int?
+  /// 异常分 0-15
+  abnormalScore  Int?
+  /// 源健康分 0-10
+  sourceHealthScore Int?
+  /// 是否可用于规则
+  canUseForRule  Boolean        @default(false)
+  /// 是否可用于强规则
+  canUseForStrongRule Boolean   @default(false)
+  /// 原因描述
+  reason         String?
+  createdAt      DateTime       @default(now())
+
+  @@index([etfCode, metricName, createdAt])
+  @@index([qualityStatus, createdAt])
+  @@map("data_quality_log")
 }
