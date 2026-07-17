@@ -1,0 +1,722 @@
+     1→"""Data Quality Score Engine — PRD v4.1 §10.8 数据质量评分.
+     2→
+     3→每个指标生成 0~100 分质量评分，5 个子维度加权：
+     4→    数据新鲜度 freshness      : 25 分
+     5→    主备源一致性 consistency   : 30 分
+     6→    字段完整性 completeness    : 20 分
+     7→    异常值检测 abnormal        : 15 分
+     8→    数据源健康 source_health   : 10 分
+     9→
+    10→评级（PRD §10.8）：
+    11→    >=90  优秀  可以参与强规则（再平衡）
+    12→    75~89 可用  可以参与规则（买入），但需标注
+    13→    60~74 可疑  默认不参与强规则，仅展示
+    14→    <60   不可用 不参与规则
+    15→
+    16→规则引擎门槛（PRD §10.8）：
+    17→    买入建议至少要求数据质量 >=75
+    18→    再平衡建议至少要求数据质量 >=90
+    19→    QDII溢价买入否决至少要求价格和净值数据均可用
+    20→
+    21→本模块是质量评分的"唯一来源"，refresh.py 刷新后调用、rule_engine 计算前读取。
+    22→"""
+    23→from __future__ import annotations
+    24→
+    25→import logging
+    26→import math
+    27→import sqlite3
+    28→from dataclasses import dataclass, field, asdict
+    29→from datetime import datetime, timedelta
+    30→from typing import Optional
+    31→
+    32→from config import DB_PATH
+    33→
+    34→logger = logging.getLogger(__name__)
+    35→
+    36→
+    37→# ─── 评分权重（PRD §10.8）──────────────────────────────────────────────────────
+    38→WEIGHT_FRESHNESS = 25
+    39→WEIGHT_CONSISTENCY = 30
+    40→WEIGHT_COMPLETENESS = 20
+    41→WEIGHT_ABNORMAL = 15
+    42→WEIGHT_SOURCE_HEALTH = 10
+    43→
+    44→
+    45→# ─── 评级阈值（PRD §10.8）──────────────────────────────────────────────────────
+    46→GRADE_EXCELLENT = 90   # 优秀：可参与强规则（再平衡）
+    47→GRADE_USABLE = 75      # 可用：可参与规则（买入）
+    48→GRADE_SUSPICIOUS = 60  # 可疑：仅展示，不参与强规则
+    49→# <60 不可用：不参与规则
+    50→
+    51→
+    52→# V5.0 Sprint1 E2: 统一数据质量门禁语义 (PRD V5.0 §数据质量门禁)
+    53→# 在 V4.x 的 quality_status (excellent/usable/suspicious/unavailable) 之外,
+    54→# 新增 5 状态门禁语义, 用于规则引擎统一判断"该指标是否参与何种规则":
+    55→GATE_STATUS: dict[str, str] = {
+    56→    "valid":    "数据有效,可参与规则",
+    57→    "degraded": "数据降级,禁用增强仓但保留基础仓",
+    58→    "stale":    "数据过期,该指标不参与强规则",
+    59→    "conflict": "主备源冲突,该标的硬否决",
+    60→    "missing":  "数据缺失,该指标不参与规则",
+    61→}
+    62→
+    63→
+    64→def get_gate_status(
+    65→    quality_score: float,
+    66→    quality_status: str,
+    67→    is_stale: bool,
+    68→    source_conflict: bool,
+    69→    missing_count: int,
+    70→) -> str:
+    71→    """V5.0 Sprint1 E2: 统一门禁语义判断。
+    72→
+    73→    将 V4.x 的多个分散信号(quality_score / quality_status / staleness /
+    74→    source_conflict / missing_count) 收敛为单一门禁状态, 供规则引擎统一判断。
+    75→
+    76→    优先级（从严到宽）:
+    77→      missing  > conflict > stale > degraded > valid
+    78→
+    79→    Args:
+    80→        quality_score: 0~100 质量分
+    81→        quality_status: excellent|usable|suspicious|unavailable
+    82→        is_stale: 是否过期(由 _check_staleness 判断, red/yellow 都视为 stale)
+    83→        source_conflict: 主备源是否冲突(导致该标的硬否决)
+    84→        missing_count: 关键字段缺失数(若 quality_score==0 且 missing>0, 视为 missing)
+    85→
+    86→    Returns:
+    87→        valid | degraded | stale | conflict | missing
+    88→    """
+    89→    # 1. missing: 关键数据完全缺失
+    90→    if missing_count > 0 and quality_score == 0:
+    91→        return "missing"
+    92→    # 2. conflict: 主备源冲突 → 该标的硬否决
+    93→    if source_conflict:
+    94→        return "conflict"
+    95→    # 3. stale: 数据过期 → 该指标不参与强规则
+    96→    if is_stale:
+    97→        return "stale"
+    98→    # 4. degraded: 质量分<60 → 禁用增强仓但保留基础仓
+    99→    if quality_score < GRADE_SUSPICIOUS:
+   100→        return "degraded"
+   101→    # 5. valid: 数据有效, 可参与规则
+   102→    return "valid"
+   103→
+   104→
+   105→@dataclass
+   106→class QualityScore:
+   107→    """数据质量评分结果。"""
+   108→    code: str
+   109→    metric_type: str
+   110→    trade_date: str = ""
+   111→
+   112→    # 5 个子分
+   113→    freshness_score: float = 0.0
+   114→    consistency_score: float = 0.0
+   115→    completeness_score: float = 0.0
+   116→    abnormal_score: float = 0.0
+   117→    source_health_score: float = 0.0
+   118→
+   119→    # 总分 + 状态
+   120→    quality_score: float = 0.0
+   121→    quality_status: str = "unavailable"  # excellent | usable | suspicious | unavailable
+   122→    can_use_for_rule: bool = False
+   123→    can_use_for_strong_rule: bool = False  # 再平衡等强规则
+   124→    reason: str = ""
+   125→
+   126→    computed_at: str = field(default_factory=lambda: datetime.now().isoformat())
+   127→
+   128→    def to_dict(self) -> dict:
+   129→        return asdict(self)
+   130→
+   131→
+   132→# ─── 子分计算 ─────────────────────────────────────────────────────────────────
+   133→
+   134→def _compute_freshness(updated_at: str, metric_type: str) -> tuple[float, str]:
+   135→    """数据新鲜度（25 分）。
+   136→
+   137→    PRD §5.4 缓存过期规则：
+   138→    - 当日：25 分
+   139→    - 1 日内：20 分
+   140→    - 2 日内：15 分
+   141→    - 3 日内：10 分
+   142→    - >3 日：0 分
+   143→    """
+   144→    if not updated_at:
+   145→        return 0.0, "数据时间缺失"
+   146→    try:
+   147→        s = str(updated_at)[:19]
+   148→        if "T" in s or "-" in s:
+   149→            try:
+   150→                dt = datetime.fromisoformat(s)
+   151→            except ValueError:
+   152→                dt = datetime.strptime(str(updated_at)[:10], "%Y-%m-%d")
+   153→        else:
+   154→            dt = datetime.strptime(str(updated_at)[:10], "%Y-%m-%d")
+   155→    except (ValueError, TypeError):
+   156→        return 0.0, f"数据时间格式异常: {updated_at}"
+   157→
+   158→    now = datetime.now()
+   159→    days_diff = (now - dt).days
+   160→
+   161→    if days_diff <= 0:
+   162→        return 25.0, ""
+   163→    if days_diff <= 1:
+   164→        return 20.0, ""
+   165→    if days_diff <= 2:
+   166→        return 15.0, ""
+   167→    if days_diff <= 3:
+   168→        return 10.0, f"数据{days_diff}天未更新"
+   169→    return 0.0, f"数据已过期{days_diff}天"
+   170→
+   171→
+   172→def _compute_consistency(
+   173→    primary_value: Optional[float],
+   174→    backup_value: Optional[float],
+   175→    diff_pct: Optional[float],
+   176→    diff_pp: Optional[float],
+   177→    threshold_type: str,
+   178→    threshold_max: float,
+   179→    has_backup: bool,
+   180→    cached_value_exists: bool = True,
+   181→) -> tuple[float, str]:
+   182→    """主备源一致性（30 分）。
+   183→
+   184→    V4.1 BUG-2026-06-QUALITY-CONSISTENCY:
+   185→        旧逻辑: cross_check 报告 "both_failed" → consistency=0，即使实际数据已成功缓存。
+   186→        根因: cross_check 是独立操作（重新拉主备源），与 fetch_with_fallback 是两套调用。
+   187→              cross_check 的 primary/backup 失败 ≠ 实际取数失败。
+   188→        修复: 引入 cached_value_exists 参数。若缓存有值但 cross_check 失败，
+   189→              视为"单源可用"（20 分），不再判 0 分。
+   190→
+   191→    PRD §10.7:
+   192→    - 主备源 diff ≤ 通过阈值：30 分
+   193→    - 主备源 diff ≤ 严重异常阈值：15 分（标注但不阻断）
+   194→    - 主备源 diff > 严重异常阈值：0 分
+   195→    - 无备源：20 分（降级，单源警告）
+   196→    - 备源失败（但主源有值）：20 分
+   197→    - 主备源均失败且缓存也无值：0 分
+   198→    """
+   199→    # 缓存有值 → 数据可用，至少 20 分
+   200→    if primary_value is not None and backup_value is not None:
+   201→        # 双源都有值，检查差异
+   202→        severe_threshold = threshold_max * 2
+   203→        diff = diff_pct if threshold_type == "pct" else diff_pp
+   204→        if diff is None:
+   205→            return 15.0, "无法计算差异"
+   206→        if diff <= threshold_max:
+   207→            return 30.0, ""
+   208→        if diff <= severe_threshold:
+   209→            return 15.0, f"主备源差异 {diff}{threshold_type} 超阈值"
+   210→        return 0.0, f"主备源差异 {diff}{threshold_type} 严重异常"
+   211→
+   212→    # 单源有值或缓存有值
+   213→    if primary_value is not None or cached_value_exists:
+   214→        if not has_backup:
+   215→            return 20.0, "无备源配置，单源降级"
+   216→        # cross_check 备源失败但主源/缓存有值
+   217→        return 20.0, "备源不可用，主源单源降级"
+   218→
+   219→    # 主备源均失败且缓存也无值
+   220→    return 0.0, "主备源均失败"
+   221→
+   222→
+   223→def _compute_completeness(
+   224→    md: dict, metric_type: str, is_qdii: bool
+   225→) -> tuple[float, str]:
+   226→    """字段完整性（20 分）—— metric-type-aware。
+   227→
+   228→    V4.1 BUG-2026-06-QUALITY-COMPLETENESS:
+   229→        旧实现固定检查 ["pe","pb","premium_today","nav","dividend_yield"] 5 字段，
+   230→        但每个 metric_type 在 market_data_cache 里只存自己的字段（valuation 只存 pe/pb，
+   231→        nav 只存 nav...），导致每条记录都被误判"缺 2-4 个字段"。
+   232→        修复: 按 metric_type 只检查该指标本身的字段。
+   233→
+   234→    PRD §10.8 完整性评级（按 metric_type 自身字段数折算）:
+   235→        全有 20 / 缺 1 非关键字段 15 / 缺 1 关键字段 10 / 缺 ≥2 字段 0
+   236→    """
+   237→    from services.data_clean_engine import clean_numeric
+   238→
+   239→    # 每个 metric_type 的字段定义: (key_fields, optional_fields)
+   240→    # key_fields 缺失扣分重，optional_fields 缺失扣分轻
+   241→    metric_fields: dict[str, tuple[list[str], list[str]]] = {
+   242→        "valuation": (["pe", "pb"], ["pe_percentile", "pb_percentile"]),
+   243→        "premium": (["premium_today"], ["premium_7d_avg"]),
+   244→        "nav": (["nav"], ["nav_history"]),
+   245→        "dividend": (["dividend_yield"], ["dividend_yield_percentile"]),
+   246→        "kline": (["kline_history"], []),
+   247→        "forex": (["rate"], ["history"]),
+   248→    }
+   249→    key_fields, opt_fields = metric_fields.get(
+   250→        metric_type, (["value"], [])
+   251→    )
+   252→
+   253→    missing_key = 0
+   254→    missing_opt = 0
+   255→    for f in key_fields:
+   256→        v = md.get(f)
+   257→        # kline_history / nav_history 是 list，需检查非空
+   258→        if isinstance(v, list):
+   259→            if not v:
+   260→                missing_key += 1
+   261→        elif clean_numeric(v) is None:
+   262→            # QDII 估值缺 PE/PB 视为非关键（海外指数本身就难取 PE/PB）
+   263→            if is_qdii and metric_type == "valuation" and f in ("pe", "pb"):
+   264→                missing_opt += 1
+   265→            else:
+   266→                missing_key += 1
+   267→    for f in opt_fields:
+   268→        v = md.get(f)
+   269→        if isinstance(v, list):
+   270→            if not v:
+   271→                missing_opt += 1
+   272→        elif clean_numeric(v) is None:
+   273→            missing_opt += 1
+   274→
+   275→    if missing_key == 0 and missing_opt == 0:
+   276→        return 20.0, ""
+   277→    if missing_key == 0 and missing_opt == 1:
+   278→        return 15.0, "缺 1 个非关键字段"
+   279→    if missing_key == 1 and missing_opt == 0:
+   280→        return 10.0, "缺 1 个关键字段"
+   281→    if missing_key == 1 and missing_opt >= 1:
+   282→        return 5.0, f"缺 1 关键 + {missing_opt} 非关键字段"
+   283→    return 0.0, f"缺 {missing_key} 关键 + {missing_opt} 非关键字段，数据不完整"
+   284→
+   285→
+   286→def _compute_abnormal(
+   287→    pe_raw: Optional[float],
+   288→    pb_raw: Optional[float],
+   289→    premium_raw: Optional[float],
+   290→    dy_raw: Optional[float],
+   291→    nav_raw: Optional[float],
+   292→) -> tuple[float, str]:
+   293→    """异常值检测（15 分）。
+   294→
+   295→    PRD §10.6:
+   296→    - 无异常：15 分
+   297→    - 有 1 异常：8 分
+   298→    - 有 ≥2 异常：0 分
+   299→    """
+   300→    from services.data_clean_engine import detect_abnormal
+   301→
+   302→    abnormal_count = 0
+   303→    reasons = []
+   304→    if pe_raw is not None and detect_abnormal("pe", pe_raw):
+   305→        abnormal_count += 1
+   306→        reasons.append(f"PE={pe_raw}异常")
+   307→    if pb_raw is not None and detect_abnormal("pb", pb_raw):
+   308→        abnormal_count += 1
+   309→        reasons.append(f"PB={pb_raw}异常")
+   310→    if premium_raw is not None and detect_abnormal("premium", premium_raw):
+   311→        abnormal_count += 1
+   312→        reasons.append(f"溢价率{premium_raw}异常")
+   313→    if dy_raw is not None and detect_abnormal("dividend_yield", dy_raw):
+   314→        abnormal_count += 1
+   315→        reasons.append(f"股息率{dy_raw}异常")
+   316→    if nav_raw is not None and detect_abnormal("nav", nav_raw):
+   317→        abnormal_count += 1
+   318→        reasons.append(f"净值{nav_raw}异常")
+   319→
+   320→    if abnormal_count == 0:
+   321→        return 15.0, ""
+   322→    if abnormal_count == 1:
+   323→        return 8.0, "；".join(reasons)
+   324→    return 0.0, f"{abnormal_count}个异常：" + "；".join(reasons)
+   325→
+   326→
+   327→def _compute_source_health(source_health_status: str) -> tuple[float, str]:
+   328→    """数据源健康（10 分）。
+   329→
+   330→    PRD:
+   331→    - 主源健康：10 分
+   332→    - 主源降级（fallback 到备源）：5 分
+   333→    - 主源故障：0 分
+   334→    """
+   335→    if source_health_status == "healthy":
+   336→        return 10.0, ""
+   337→    if source_health_status == "degraded":
+   338→        return 5.0, "主源降级，已切备源"
+   339→    if source_health_status == "failed":
+   340→        return 0.0, "主源故障"
+   341→    return 5.0, f"未知源状态: {source_health_status}"
+   342→
+   343→
+   344→# ─── 主入口 ───────────────────────────────────────────────────────────────────
+   345→
+   346→def compute_quality_score(
+   347→    code: str,
+   348→    metric_type: str,
+   349→    md: dict,
+   350→    cross_check: Optional[dict] = None,
+   351→    source_health: str = "healthy",
+   352→    is_qdii: bool = False,
+   353→) -> QualityScore:
+   354→    """计算单条数据的质量评分。
+   355→
+   356→    Args:
+   357→        code: ETF 代码或指数代码
+   358→        metric_type: valuation / premium / nav / dividend / price
+   359→        md: market_data_cache 行数据（含 pe/pb/premium_today/nav/dividend_yield/updated_at 等）
+   360→        cross_check: 交叉校验结果 dict（含 primary_value/backup_value/diff_pct/diff_pp/threshold_type/threshold_max/quality_status）
+   361→                     None 表示无交叉校验记录
+   362→        source_health: healthy / degraded / failed
+   363→        is_qdii: 是否 QDII（影响完整性判断）
+   364→
+   365→    Returns:
+   366→        QualityScore 对象
+   367→    """
+   368→    from services.data_clean_engine import clean_numeric
+   369→    from services.data_source_manager import CROSS_CHECK_THRESHOLDS, _threshold_key_for
+   370→
+   371→    # 提取关键字段
+   372→    pe_raw = clean_numeric(md.get("pe"))
+   373→    pb_raw = clean_numeric(md.get("pb"))
+   374→    premium_raw = clean_numeric(md.get("premium_today"))
+   375→    dy_raw = clean_numeric(md.get("dividend_yield"))
+   376→    nav_raw = clean_numeric(md.get("nav"))
+   377→    updated_at = md.get("updated_at") or md.get("date") or md.get("fetch_time") or ""
+   378→
+   379→    # 判断缓存是否有有效值（用于 consistency/source_health 兜底）
+   380→    # V4.1 BUG-2026-06-QUALITY: cross_check 独立失败 ≠ 实际取数失败，
+   381→    # 只要缓存里有值就说明实际取数链路是通的
+   382→    cached_value_exists = any(v is not None for v in [pe_raw, pb_raw, premium_raw, dy_raw, nav_raw])
+   383→    # kline_history / nav_history 是 list，单独检查
+   384→    if not cached_value_exists:
+   385→        for list_field in ("kline_history", "nav_history", "dividend_yield_history", "history"):
+   386→            v = md.get(list_field)
+   387→            if isinstance(v, list) and v:
+   388→                cached_value_exists = True
+   389→                break
+   390→
+   391→    # 5 个子分
+   392→    f_score, f_reason = _compute_freshness(updated_at, metric_type)
+   393→
+   394→    if cross_check:
+   395→        c_score, c_reason = _compute_consistency(
+   396→            primary_value=cross_check.get("primary_value"),
+   397→            backup_value=cross_check.get("backup_value"),
+   398→            diff_pct=cross_check.get("diff_pct"),
+   399→            diff_pp=cross_check.get("diff_pp"),
+   400→            threshold_type=cross_check.get("threshold_type", "pct"),
+   401→            threshold_max=cross_check.get("threshold_max", 5.0),
+   402→            has_backup=cross_check.get("backup_source") not in (None, "", "none"),
+   403→            cached_value_exists=cached_value_exists,
+   404→        )
+   405→    else:
+   406→        # 无交叉校验记录但缓存有值 → 单源 20 分；缓存无值 → 0 分
+   407→        if cached_value_exists:
+   408→            c_score, c_reason = 20.0, "无交叉校验，单源可用"
+   409→        else:
+   410→            c_score, c_reason = 0.0, "无交叉校验记录且缓存无值"
+   411→
+   412→    comp_score, comp_reason = _compute_completeness(md, metric_type, is_qdii)
+   413→    a_score, a_reason = _compute_abnormal(pe_raw, pb_raw, premium_raw, dy_raw, nav_raw)
+   414→
+   415→    # V4.1 BUG-2026-06-QUALITY-SOURCE: source_health 不再仅依赖 cross_check 的 quality_status，
+   416→    # 而是综合判断: 缓存有值 + source 非空 → healthy；缓存有值但 source 含 cache: → degraded；
+   417→    # 缓存无值 → failed
+   418→    actual_source = md.get("source") or md.get("source_api") or ""
+   419→    if not cached_value_exists:
+   420→        s_score, s_reason = 0.0, "缓存无数据"
+   421→    elif "cache:" in str(actual_source) or actual_source.startswith("stale"):
+   422→        s_score, s_reason = 5.0, "使用缓存数据（主源可能降级）"
+   423→    else:
+   424→        # 优先用传入的 source_health（来自 fallback_summary 的真实降级链路）
+   425→        s_score, s_reason = _compute_source_health(source_health)
+   426→
+   427→    # 总分
+   428→    total = round(f_score + c_score + comp_score + a_score + s_score, 1)
+   429→
+   430→    # 评级
+   431→    if total >= GRADE_EXCELLENT:
+   432→        status = "excellent"
+   433→        can_rule = True
+   434→        can_strong = True
+   435→        level_reason = ""
+   436→    elif total >= GRADE_USABLE:
+   437→        status = "usable"
+   438→        can_rule = True
+   439→        can_strong = False
+   440→        level_reason = "数据质量可用但未达强规则门槛(90)"
+   441→    elif total >= GRADE_SUSPICIOUS:
+   442→        status = "suspicious"
+   443→        can_rule = False
+   444→        can_strong = False
+   445→        level_reason = "数据质量可疑，仅展示不参与规则"
+   446→    else:
+   447→        status = "unavailable"
+   448→        can_rule = False
+   449→        can_strong = False
+   450→        level_reason = "数据质量不可用，不参与规则"
+   451→
+   452→    # 合并原因
+   453→    reasons = [r for r in [f_reason, c_reason, comp_reason, a_reason, s_reason, level_reason] if r]
+   454→    reason_text = "；".join(reasons)
+   455→
+   456→    return QualityScore(
+   457→        code=code,
+   458→        metric_type=metric_type,
+   459→        trade_date=str(md.get("date") or md.get("trade_date") or ""),
+   460→        freshness_score=f_score,
+   461→        consistency_score=c_score,
+   462→        completeness_score=comp_score,
+   463→        abnormal_score=a_score,
+   464→        source_health_score=s_score,
+   465→        quality_score=total,
+   466→        quality_status=status,
+   467→        can_use_for_rule=can_rule,
+   468→        can_use_for_strong_rule=can_strong,
+   469→        reason=reason_text,
+   470→    )
+   471→
+   472→
+   473→# ─── 数据库持久化 ─────────────────────────────────────────────────────────────
+   474→
+   475→def _ensure_quality_result_table(conn: sqlite3.Connection) -> None:
+   476→    """幂等创建 data_quality_result 表（PRD §13.8）。"""
+   477→    conn.executescript(
+   478→        """
+   479→        CREATE TABLE IF NOT EXISTS data_quality_result (
+   480→            id INTEGER PRIMARY KEY AUTOINCREMENT,
+   481→            code TEXT NOT NULL,
+   482→            trade_date TEXT,
+   483→            metric_type TEXT NOT NULL,
+   484→            quality_score REAL NOT NULL,
+   485→            quality_status TEXT NOT NULL,
+   486→            freshness_score REAL,
+   487→            consistency_score REAL,
+   488→            completeness_score REAL,
+   489→            abnormal_score REAL,
+   490→            source_health_score REAL,
+   491→            can_use_for_rule BOOLEAN,
+   492→            can_use_for_strong_rule BOOLEAN,
+   493→            reason TEXT,
+   494→            created_at TEXT NOT NULL
+   495→        );
+   496→        CREATE INDEX IF NOT EXISTS idx_quality_result_code ON data_quality_result(code, metric_type, created_at DESC);
+   497→        CREATE INDEX IF NOT EXISTS idx_quality_result_status ON data_quality_result(quality_status, created_at DESC);
+   498→        """
+   499→    )
+   500→
+   501→
+   502→def persist_quality_score(score: QualityScore) -> bool:
+   503→    """持久化质量评分到 data_quality_result 表。"""
+   504→    try:
+   505→        conn = sqlite3.connect(DB_PATH)
+   506→        try:
+   507→            _ensure_quality_result_table(conn)
+   508→            conn.execute(
+   509→                """INSERT INTO data_quality_result
+   510→                   (code, trade_date, metric_type, quality_score, quality_status,
+   511→                    freshness_score, consistency_score, completeness_score,
+   512→                    abnormal_score, source_health_score,
+   513→                    can_use_for_rule, can_use_for_strong_rule, reason, created_at)
+   514→                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+   515→                (score.code, score.trade_date, score.metric_type,
+   516→                 score.quality_score, score.quality_status,
+   517→                 score.freshness_score, score.consistency_score, score.completeness_score,
+   518→                 score.abnormal_score, score.source_health_score,
+   519→                 1 if score.can_use_for_rule else 0,
+   520→                 1 if score.can_use_for_strong_rule else 0,
+   521→                 score.reason, score.computed_at),
+   522→            )
+   523→            conn.commit()
+   524→            return True
+   525→        finally:
+   526→            conn.close()
+   527→    except Exception as e:
+   528→        logger.error(f"[QUALITY] Failed to persist score for {score.code}/{score.metric_type}: {e}")
+   529→        return False
+   530→
+   531→
+   532→# ─── 查询接口 ─────────────────────────────────────────────────────────────────
+   533→
+   534→def get_latest_quality(code: str, metric_type: str) -> Optional[dict]:
+   535→    """查询某 code/metric_type 的最新质量评分。"""
+   536→    try:
+   537→        conn = sqlite3.connect(DB_PATH)
+   538→        conn.row_factory = sqlite3.Row
+   539→        try:
+   540→            _ensure_quality_result_table(conn)
+   541→            row = conn.execute(
+   542→                """SELECT * FROM data_quality_result
+   543→                   WHERE code = ? AND metric_type = ?
+   544→                   ORDER BY created_at DESC LIMIT 1""",
+   545→                (code, metric_type),
+   546→            ).fetchone()
+   547→            return dict(row) if row else None
+   548→        finally:
+   549→            conn.close()
+   550→    except Exception as e:
+   551→        logger.error(f"[QUALITY] get_latest_quality error: {e}")
+   552→        return None
+   553→
+   554→
+   555→def get_quality_summary() -> dict:
+   556→    """全量质量摘要（PRD §12.1: GET /api/data-quality/summary）。"""
+   557→    try:
+   558→        conn = sqlite3.connect(DB_PATH)
+   559→        conn.row_factory = sqlite3.Row
+   560→        try:
+   561→            _ensure_quality_result_table(conn)
+   562→            # 取每个 (code, metric_type) 的最新一条
+   563→            rows = conn.execute(
+   564→                """SELECT q.* FROM data_quality_result q
+   565→                   INNER JOIN (
+   566→                       SELECT code, metric_type, MAX(created_at) AS max_ts
+   567→                       FROM data_quality_result GROUP BY code, metric_type
+   568→                   ) latest ON q.code = latest.code AND q.metric_type = latest.metric_type
+   569→                          AND q.created_at = latest.max_ts"""
+   570→            ).fetchall()
+   571→
+   572→            total = len(rows)
+   573→            excellent = sum(1 for r in rows if r["quality_status"] == "excellent")
+   574→            usable = sum(1 for r in rows if r["quality_status"] == "usable")
+   575→            suspicious = sum(1 for r in rows if r["quality_status"] == "suspicious")
+   576→            unavailable = sum(1 for r in rows if r["quality_status"] == "unavailable")
+   577→
+   578→            scores = [r["quality_score"] for r in rows]
+   579→            avg_score = round(sum(scores) / total, 1) if total > 0 else 0
+   580→
+   581→            can_rule_count = sum(1 for r in rows if r["can_use_for_rule"])
+   582→            can_strong_count = sum(1 for r in rows if r["can_use_for_strong_rule"])
+   583→
+   584→            # V5.0 Sprint1 E2: 统一数据质量门禁语义统计
+   585→            # 从现有字段推导 is_stale / source_conflict / missing_count:
+   586→            #   - is_stale: freshness_score < 25 (V4.x 新鲜度评级, 25 分=当日)
+   587→            #   - source_conflict: reason 包含主备源冲突关键词且非 passed
+   588→            #   - missing_count: quality_status=unavailable 且 reason 含"缺" → 1, 否则 0
+   589→            gate_counts = {"valid": 0, "degraded": 0, "stale": 0,
+   590→                           "conflict": 0, "missing": 0}
+   591→            _conflict_keywords = ("主备源", "源不一致", "source_inconsistent",
+   592→                                  "source_conflict", "冲突")
+   593→            for r in rows:
+   594→                reason = r["reason"] or ""
+   595→                freshness = r["freshness_score"] if r["freshness_score"] is not None else 0
+   596→                is_stale = float(freshness) < 25.0
+   597→                source_conflict = any(kw in reason for kw in _conflict_keywords)
+   598→                # unavailable + reason 含 "缺" → 视为 missing
+   599→                missing_count = 1 if (
+   600→                    r["quality_status"] == "unavailable" and "缺" in reason
+   601→                ) else 0
+   602→                gate = get_gate_status(
+   603→                    quality_score=r["quality_score"] or 0,
+   604→                    quality_status=r["quality_status"] or "unavailable",
+   605→                    is_stale=is_stale,
+   606→                    source_conflict=source_conflict,
+   607→                    missing_count=missing_count,
+   608→                )
+   609→                gate_counts[gate] += 1
+   610→
+   611→            return {
+   612→                "total_metrics": total,
+   613→                "excellent": excellent,
+   614→                "usable": usable,
+   615→                "suspicious": suspicious,
+   616→                "unavailable": unavailable,
+   617→                "avg_score": avg_score,
+   618→                "can_use_for_rule_count": can_rule_count,
+   619→                "can_use_for_strong_rule_count": can_strong_count,
+   620→                # V5.0 Sprint1 E2: 统一数据质量门禁语义统计
+   621→                "gate_status_counts": gate_counts,
+   622→                "overall_status": (
+   623→                    "excellent" if avg_score >= GRADE_EXCELLENT
+   624→                    else "usable" if avg_score >= GRADE_USABLE
+   625→                    else "suspicious" if avg_score >= GRADE_SUSPICIOUS
+   626→                    else "unavailable"
+   627→                ),
+   628→                "allow_buy_suggestion": can_rule_count > 0,
+   629→                "allow_rebalance_suggestion": can_strong_count > 0,
+   630→                "items": [dict(r) for r in rows],
+   631→            }
+   632→        finally:
+   633→            conn.close()
+   634→    except Exception as e:
+   635→        logger.error(f"[QUALITY] get_quality_summary error: {e}")
+   636→        return {"total_metrics": 0, "excellent": 0, "usable": 0, "suspicious": 0,
+   637→                "unavailable": 0, "avg_score": 0, "items": [],
+   638→                "gate_status_counts": {"valid": 0, "degraded": 0, "stale": 0,
+   639→                                       "conflict": 0, "missing": 0}}
+   640→
+   641→
+   642→def get_quality_by_code(code: str) -> list[dict]:
+   643→    """查询单只 ETF 的所有指标质量评分。"""
+   644→    try:
+   645→        conn = sqlite3.connect(DB_PATH)
+   646→        conn.row_factory = sqlite3.Row
+   647→        try:
+   648→            _ensure_quality_result_table(conn)
+   649→            rows = conn.execute(
+   650→                """SELECT * FROM data_quality_result
+   651→                   WHERE code = ?
+   652→                   ORDER BY created_at DESC""",
+   653→                (code,),
+   654→            ).fetchall()
+   655→            return [dict(r) for r in rows]
+   656→        finally:
+   657→            conn.close()
+   658→    except Exception as e:
+   659→        logger.error(f"[QUALITY] get_quality_by_code error: {e}")
+   660→        return []
+   661→
+   662→
+   663→def get_quality_logs(limit: int = 100, status: Optional[str] = None) -> list[dict]:
+   664→    """数据质量日志（按时间倒序）。"""
+   665→    try:
+   666→        conn = sqlite3.connect(DB_PATH)
+   667→        conn.row_factory = sqlite3.Row
+   668→        try:
+   669→            _ensure_quality_result_table(conn)
+   670→            if status:
+   671→                rows = conn.execute(
+   672→                    """SELECT * FROM data_quality_result
+   673→                       WHERE quality_status = ?
+   674→                       ORDER BY created_at DESC LIMIT ?""",
+   675→                    (status, limit),
+   676→                ).fetchall()
+   677→            else:
+   678→                rows = conn.execute(
+   679→                    """SELECT * FROM data_quality_result
+   680→                       ORDER BY created_at DESC LIMIT ?""",
+   681→                    (limit,),
+   682→                ).fetchall()
+   683→            return [dict(r) for r in rows]
+   684→        finally:
+   685→            conn.close()
+   686→    except Exception as e:
+   687→        logger.error(f"[QUALITY] get_quality_logs error: {e}")
+   688→        return []
+   689→
+   690→
+   691→def get_quality_conflicts(limit: int = 50) -> list[dict]:
+   692→    """主备源冲突列表。
+   693→
+   694→    精准匹配 reason 中含主备源冲突关键词的记录（由 _compute_consistency 生成），
+   695→    避免误命中所有含"源"字的记录。同时限定 quality_status 为可疑/不可用，
+   696→    排除已通过校验的记录。
+   697→    """
+   698→    try:
+   699→        conn = sqlite3.connect(DB_PATH)
+   700→        conn.row_factory = sqlite3.Row
+   701→        try:
+   702→            _ensure_quality_result_table(conn)
+   703→            rows = conn.execute(
+   704→                """SELECT * FROM data_quality_result
+   705→                   WHERE quality_status IN ('suspicious', 'unavailable')
+   706→                     AND (
+   707→                       reason LIKE '%主备源%'
+   708→                       OR reason LIKE '%源不一致%'
+   709→                       OR reason LIKE '%source_inconsistent%'
+   710→                       OR reason LIKE '%source_conflict%'
+   711→                       OR reason LIKE '%冲突%'
+   712→                     )
+   713→                   ORDER BY created_at DESC LIMIT ?""",
+   714→                (limit,),
+   715→            ).fetchall()
+   716→            return [dict(r) for r in rows]
+   717→        finally:
+   718→            conn.close()
+   719→    except Exception as e:
+   720→        logger.error(f"[QUALITY] get_quality_conflicts error: {e}")
+   721→        return []
+   722→

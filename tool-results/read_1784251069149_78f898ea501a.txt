@@ -1,0 +1,2002 @@
+     1→"""Rule Engine (target-gap-v2) - 100% deterministic calculation, AI has no authority to modify.
+     2→
+     3→Implements the gap-driven allocation algorithm:
+     4→  Step 1:  Read holdings, targets, rules, weekly_budget, market_data
+     5→  Step 2:  Compute invested_asset_value (only investable codes)
+     6→  Step 3:  after_budget_total = invested_asset_value + weekly_budget
+     7→  Step 4:  For each investable holding compute gap fields
+     8→  Step 5:  Veto filtering (one-vote veto)
+     9→  Step 6:  Build investable pool = base_gap>0 AND not vetoed
+    10→  Step 7:  Allocate budget by gap proportion
+    11→  Step 8:  Apply reduce/boost multipliers (reduce > boost)
+    12→  Step 9:  Gap cap (never buy more than the gap)
+    13→  Step 10: Total budget constraint
+    14→  Step 11: Round to integers, fix rounding diff on largest item
+    15→  Step 12: Build response with full audit fields
+    16→
+    17→Rule execution priority: Veto > data-quality > reduce > boost > gap-allocation.
+    18→When both reduce and boost hit, reduce wins (conservative principle).
+    19→
+    20→CRITICAL FIX vs v1:
+    21→  - v1 used static target-ratio normalization → over-allocated ETFs STILL got bought.
+    22→  - v2 uses target-gap-driven allocation: an over-allocated ETF has base_gap_amount=0
+    23→    and is excluded from the investable pool, so it gets amount=0 and a reason
+    24→    "当前占比30.4%高于目标18%，已超配，本周不补仓。"
+    25→"""
+    26→import logging
+    27→import uuid
+    28→from datetime import datetime
+    29→from typing import Optional
+    30→
+    31→from models.schemas import (
+    32→    CalculateRequest,
+    33→    CalculateResponse,
+    34→    CashPoolSuggestion,
+    35→    CashLedgerEntry,
+    36→    DataQuality,
+    37→    RebalanceSuggestion,
+    38→    RuleHit,
+    39→    SuggestionItem,
+    40→)
+    41→from services.data_clean_engine import clean_numeric
+    42→
+    43→# V4.1 S1-T7: 统一复用 data_clean_engine 的清洗逻辑（唯一来源），
+    44→# 避免与 akshare_service / data_quality_score 的清洗逻辑漂移。
+    45→safe_num = clean_numeric
+    46→
+    47→# V4.2 策略书§4/§5/§8: 从 config 导入分桶比例和阈值
+    48→from config import (
+    49→    BASE_BUCKET_RATIO,
+    50→    VALUE_BUCKET_RATIO,
+    51→    MAX_SINGLE_ETF_BUY_RATIO,
+    52→    QDII_PREMIUM_HARD_VETO_TODAY,
+    53→    QDII_PREMIUM_HARD_VETO_3D_AVG,
+    54→    QDII_RELEASE_PLAN_WEEKS,
+    55→    QDII_RELEASE_CAP_MULTIPLIER,
+    56→    METRIC_DIRECTION,
+    57→)
+    58→
+    59→logger = logging.getLogger(__name__)
+    60→
+    61→# Codes that are NOT investable targets — they have target_ratio=0 / not in targets.
+    62→# They appear in suggestions with amount=0 and a vetoed info hit so the user can see
+    63→# they are excluded from weekly buying on purpose.
+    64→DEFAULT_NON_INVESTABLE_HINT = {"518880", "511990"}
+    65→
+    66→
+    67→def _is_metric_expensive(metric_name: str, value: float, threshold: float) -> bool:
+    68→    """V4.2 §6.4: 按指标方向判断是否"贵"。
+    69→
+    70→    higher_is_expensive: value > threshold 视为偏贵 (PE/PB/溢价 等估值指标)
+    71→    higher_is_cheaper:   value < threshold 视为偏贵 (股息率/股息率利差 等收益指标)
+    72→
+    73→    供规则引擎 reduce/boost 检查参考; 现有 _check_reduce_hits / _check_boost_hits
+    74→    代码已正确处理两类方向, 本函数作为防呆辅助供未来扩展和回归测试使用。
+    75→
+    76→    Examples:
+    77→      _is_metric_expensive("pe_percentile", 85, 80)             -> True  (PE分位85% > 80% 阈值, 偏贵)
+    78→      _is_metric_expensive("dividend_yield", 3.0, 5.0)          -> True  (股息率3% < 5% 阈值, 偏贵)
+    79→      _is_metric_expensive("dividend_bond_spread", 1.0, 2.5)    -> True  (利差1% < 2.5% 阈值, 偏贵)
+    80→    """
+    81→    direction = METRIC_DIRECTION.get(metric_name, "higher_is_expensive")
+    82→    if direction == "higher_is_cheaper":
+    83→        return value < threshold
+    84→    return value > threshold
+    85→
+    86→# QDII overseas ETFs whose data quality requires premium_today (not pe_percentile)
+    87→QDII_CODES = {"513500", "513300"}
+    88→
+    89→# 现金水池标的 (V4 strategy doc §8)
+    90→CASH_POOL_CODE = "511990"
+    91→
+    92→# A股宽基再平衡标的 (V4 strategy doc §7.2): 159338/510330/588000
+    93→A_SHARE_REBALANCE_CODES = {"159338", "510330", "588000"}
+    94→# 红利ETF (V4 strategy doc §7.3): 510880
+    95→DIVIDEND_REBALANCE_CODES = {"510880"}
+    96→# 美股宽基再平衡标的 (V4 strategy doc §7.4): 513500/513300
+    97→US_SHARE_REBALANCE_CODES = {"513500", "513300"}
+    98→
+    99→
+   100→# ─── helpers ──────────────────────────────────────────────────────────────────
+   101→
+   102→
+   103→def _check_staleness(code: str, md: dict) -> tuple[bool, str, str]:
+   104→    """V4 策略书§5.4 缓存过期规则。
+   105→
+   106→    返回 (is_stale, stale_level, stale_reason)。
+   107→    - A股ETF收盘价/指数估值：非最新交易日标红；超2交易日标黄
+   108→    - QDII净值：超2交易日标黄
+   109→    - 溢价率：当日缺失标红
+   110→    - 股息率：超7交易日标黄
+   111→    """
+   112→    is_qdii = code in QDII_CODES
+   113→    updated_at = md.get("updated_at") or md.get("date") or ""
+   114→    if not updated_at:
+   115→        return (True, "red", "数据时间缺失")
+   116→
+   117→    try:
+   118→        # 解析更新时间
+   119→        updated_str = str(updated_at)[:19]
+   120→        dt_updated = datetime.fromisoformat(updated_str) if "T" in updated_str or "-" in updated_str else None
+   121→        if dt_updated is None:
+   122→            # 尝试只取日期
+   123→            dt_updated = datetime.strptime(str(updated_at)[:10], "%Y-%m-%d")
+   124→    except (ValueError, TypeError):
+   125→        return (True, "red", f"数据时间格式异常: {updated_at}")
+   126→
+   127→    now = datetime.now()
+   128→    # 计算自然天数差（交易日判断需要节假日表，这里用自然天近似）
+   129→    days_diff = (now - dt_updated).days
+   130→    hours_diff = (now - dt_updated).total_seconds() / 3600
+   131→
+   132→    # 溢价率当日缺失 → 标红（仅QDII）
+   133→    if is_qdii:
+   134→        premium = safe_num(md.get("premium_today"))
+   135→        if premium is None:
+   136→            return (True, "red", "QDII溢价率当日缺失")
+   137→
+   138→    # A股：非最新交易日（>1天且非周末）→ 标红
+   139→    if not is_qdii:
+   140→        if days_diff >= 4:  # 超3天（覆盖周末）标红
+   141→            return (True, "red", f"A股数据已过期{days_diff}天，非最新交易日")
+   142→        if days_diff >= 3:  # 超2交易日标黄
+   143→            return (True, "yellow", f"A股数据{days_diff}天未更新，可能非最新交易日")
+   144→
+   145→    # QDII净值：超2交易日（自然天≥4覆盖周末）标黄
+   146→    if is_qdii:
+   147→        if days_diff >= 5:
+   148→            return (True, "yellow", f"QDII净值{days_diff}天未更新，可能滞后")
+   149→
+   150→    # 股息率：超7天标黄
+   151→    div = safe_num(md.get("dividend_yield"))
+   152→    if div is not None and days_diff >= 8:
+   153→        return (True, "yellow", f"股息率数据{days_diff}天未更新")
+   154→
+   155→    return (False, "", "")
+   156→
+   157→
+   158→def validate_data_quality(code: str, md: dict) -> DataQuality:
+   159→    """V4 数据质量校验（策略书§5.3 五状态 + §4.5 数据血缘 + §5.4 缓存过期）。
+   160→
+   161→    五状态：
+   162→      passed             - 数据新鲜、样本充足、关键字段齐全
+   163→      minor_abnormal     - 小幅异常但在容忍范围（如样本略不足但可参考）
+   164→      serious_abnormal   - 关键字段异常（PE≤0/≥500、PB≤0/≥100 等）
+   165→      insufficient       - 样本不足或关键字段缺失
+   166→      source_inconsistent- 主备源差异超阈值（当前单源，暂不触发）
+   167→    """
+   168→    source = "akshare"
+   169→    sample_days = 0
+   170→    sd = md.get("sample_days")
+   171→    if sd is not None:
+   172→        try:
+   173→            sample_days = int(sd)
+   174→        except (TypeError, ValueError):
+   175→            sample_days = 0
+   176→    if sample_days <= 0:
+   177→        for hist_key in ("pe_history", "pb_history", "premium_30d", "nav_history", "dividend_yield_history"):
+   178→            hist = md.get(hist_key) or []
+   179→            if isinstance(hist, list) and len(hist) > sample_days:
+   180→                sample_days = len(hist)
+   181→
+   182→    required_sample_days = 1000
+   183→    is_sample_enough = sample_days >= 500
+   184→
+   185→    # 缺失字段计数
+   186→    missing_count = 0
+   187→    for key in ("pe_percentile", "pb_percentile", "premium_today", "premium_7d_avg"):
+   188→        v = md.get(key)
+   189→        if v is None or safe_num(v) is None:
+   190→            missing_count += 1
+   191→
+   192→    pe_present = safe_num(md.get("pe_percentile")) is not None
+   193→    premium_present = safe_num(md.get("premium_today")) is not None
+   194→    is_qdii = code in QDII_CODES
+   195→
+   196→    # V4 §5.2 异常值检测（PE≤0或≥500、PB≤0或≥100、溢价abs>30%、股息率<0或>20%）
+   197→    outlier_count = 0
+   198→    abnormal_reasons = []
+   199→    pe_raw = safe_num(md.get("pe"))
+   200→    pb_raw = safe_num(md.get("pb"))
+   201→    premium_raw = safe_num(md.get("premium_today"))
+   202→    dy_raw = safe_num(md.get("dividend_yield"))
+   203→
+   204→    if pe_raw is not None and (pe_raw <= 0 or pe_raw >= 500):
+   205→        outlier_count += 1
+   206→        abnormal_reasons.append(f"PE={pe_raw:.1f}异常")
+   207→    if pb_raw is not None and (pb_raw <= 0 or pb_raw >= 100):
+   208→        outlier_count += 1
+   209→        abnormal_reasons.append(f"PB={pb_raw:.2f}异常")
+   210→    if premium_raw is not None and abs(premium_raw) > 30:
+   211→        outlier_count += 1
+   212→        abnormal_reasons.append(f"溢价率{premium_raw:.1f}%异常")
+   213→    if dy_raw is not None and (dy_raw < 0 or dy_raw > 20):
+   214→        outlier_count += 1
+   215→        abnormal_reasons.append(f"股息率{dy_raw:.2f}%异常")
+   216→
+   217→    # 缓存过期检测（§5.4）
+   218→    is_stale, stale_level, stale_reason = _check_staleness(code, md)
+   219→
+   220→    # 判断是否可计算
+   221→    if is_qdii:
+   222→        can_calculate = is_sample_enough and premium_present and outlier_count == 0
+   223→    else:
+   224→        can_calculate = is_sample_enough and pe_present and outlier_count == 0
+   225→
+   226→    # V4 §5.3 五状态判定（优先级：严重异常 > 源不一致 > 数据不足 > 轻微异常 > 通过）
+   227→    if outlier_count > 0:
+   228→        quality_status = "serious_abnormal"
+   229→        abnormal_reason = "；".join(abnormal_reasons)
+   230→    elif not is_sample_enough or (not pe_present and not is_qdii) or (not premium_present and is_qdii):
+   231→        quality_status = "insufficient"
+   232→        reasons = []
+   233→        if not is_sample_enough:
+   234→            reasons.append(f"样本不足({sample_days}<{required_sample_days})")
+   235→        if not pe_present and not is_qdii:
+   236→            reasons.append("PE分位缺失")
+   237→        if not premium_present and is_qdii:
+   238→            reasons.append("溢价率缺失")
+   239→        abnormal_reason = "；".join(reasons)
+   240→    elif is_stale and stale_level == "red":
+   241→        quality_status = "serious_abnormal"
+   242→        abnormal_reason = stale_reason
+   243→    elif is_stale and stale_level == "yellow":
+   244→        quality_status = "minor_abnormal"
+   245→        abnormal_reason = stale_reason
+   246→    else:
+   247→        quality_status = "passed"
+   248→        abnormal_reason = ""
+   249→
+   250→    # V4 §4.5 数据血缘
+   251→    if is_qdii:
+   252→        raw_value = premium_raw
+   253→        percentile_window = "premium"
+   254→    else:
+   255→        raw_value = pe_raw
+   256→        percentile_window = "5y" if safe_num(md.get("pe_percentile_5y")) is not None else "default"
+   257→
+   258→    clean_value = raw_value if outlier_count == 0 else None
+   259→    is_valid = outlier_count == 0 and quality_status != "serious_abnormal"
+   260→
+   261→    updated_at = md.get("updated_at") or md.get("date") or ""
+   262→
+   263→    # V4.1 §10.8: 读取持久化的质量评分（优先用 refresh 时计算并持久化的分数）
+   264→    quality_score_val: Optional[float] = None
+   265→    can_use_for_rule_val = False
+   266→    can_use_for_strong_rule_val = False
+   267→    try:
+   268→        from services.data_quality_score import get_latest_quality, GRADE_EXCELLENT, GRADE_USABLE
+   269→        # valuation 用指数代码查，其他用 ETF 代码查
+   270→        lookup_code = code
+   271→        # 估值指标的 code 是指数代码，rule_engine 里传进来的 code 是 ETF 代码
+   272→        # 需要映射：ETF 代码 → 指数代码（用于 valuation 查询）
+   273→        from config import TRACKED_ETFS
+   274→        metric_type_for_lookup = "valuation" if not is_qdii else "premium"
+   275→        if metric_type_for_lookup == "valuation":
+   276→            etf_info = TRACKED_ETFS.get(code, {})
+   277→            lookup_code = etf_info.get("index_code", code)
+   278→        else:
+   279→            lookup_code = code
+   280→
+   281→        persisted = get_latest_quality(lookup_code, metric_type_for_lookup)
+   282→        if persisted and persisted.get("quality_score") is not None:
+   283→            quality_score_val = persisted["quality_score"]
+   284→            can_use_for_rule_val = bool(persisted.get("can_use_for_rule"))
+   285→            can_use_for_strong_rule_val = bool(persisted.get("can_use_for_strong_rule"))
+   286→    except Exception as e:
+   287→        logger.warning(f"[RULE-ENGINE] Failed to read quality score for {code}: {e}")
+   288→
+   289→    # 如果没有持久化分数，根据 5 态质量状态兜底推断（保守）
+   290→    if quality_score_val is None:
+   291→        if quality_status == "passed":
+   292→            quality_score_val = 85.0  # 可用但未达强规则门槛
+   293→            can_use_for_rule_val = True
+   294→            can_use_for_strong_rule_val = False
+   295→        elif quality_status == "minor_abnormal":
+   296→            quality_score_val = 65.0  # 可疑
+   297→            can_use_for_rule_val = False
+   298→            can_use_for_strong_rule_val = False
+   299→        else:
+   300→            quality_score_val = 40.0  # 不可用
+   301→            can_use_for_rule_val = False
+   302→            can_use_for_strong_rule_val = False
+   303→
+   304→    # V4.1 §10.8: 质量分门槛 — 不达标时升级 veto
+   305→    # 买入需 >=75，再平衡需 >=90
+   306→    # 这里只标记 can_use_for_rule/can_use_for_strong_rule，真正的 veto 在 _check_veto_hits 里触发
+   307→
+   308→    # V4.1 §10.9 / S2-T5 + S2-T8: 从 cross_check_log 读取最新交叉校验结果，
+   309→    # 判定 single_source_warning（单源场景）和 source_conflict（主备源冲突）
+   310→    single_source_warning_val = False
+   311→    source_conflict_val = False
+   312→    try:
+   313→        from services.data_source_manager import _get_db
+   314→        import sqlite3 as _sqlite3
+   315→        conn = _get_db()
+   316→        conn.row_factory = _sqlite3.Row
+   317→        try:
+   318→            # 查最新一条 cross_check_log（用 lookup_code 即指数代码 for valuation，ETF 代码 for premium）
+   319→            cc_row = conn.execute(
+   320→                """SELECT quality_status
+   321→                   FROM cross_check_log
+   322→                   WHERE code = ? AND field = ?
+   323→                   ORDER BY fetch_time DESC LIMIT 1""",
+   324→                (lookup_code, metric_type_for_lookup),
+   325→            ).fetchone()
+   326→            if cc_row:
+   327→                qs = cc_row["quality_status"] or ""
+   328→                # source_conflict: 主备源差异超阈值（quality_status='source_inconsistent'）
+   329→                if qs == "source_inconsistent":
+   330→                    source_conflict_val = True
+   331→                # single_source_warning: 单源场景
+   332→                # - no_backup: 无备源配置
+   333→                # - backup_failed: 备源拉取失败
+   334→                # - primary_failed: 主源失败只剩备源（也算单源）
+   335→                if qs in ("no_backup", "backup_failed", "primary_failed"):
+   336→                    single_source_warning_val = True
+   337→        finally:
+   338→            conn.close()
+   339→    except Exception as e:
+   340→        logger.debug(f"[RULE-ENGINE] Failed to read cross_check_log for {code}: {e}")
+   341→
+   342→    # V4.1 S2-T5: 单源场景下，限制强再平衡规则（can_use_for_strong_rule 强制 False）
+   343→    if single_source_warning_val:
+   344→        can_use_for_strong_rule_val = False
+   345→
+   346→    # V4.1 S2-T8: 主备源冲突时，强制阻断强规则 + 标记需人工确认
+   347→    if source_conflict_val:
+   348→        can_use_for_strong_rule_val = False
+   349→        # 主备源冲突也阻断买入（保守策略）
+   350→        can_use_for_rule_val = False
+   351→
+   352→    return DataQuality(
+   353→        source=source,
+   354→        sampleDays=sample_days,
+   355→        requiredSampleDays=required_sample_days,
+   356→        isSampleEnough=is_sample_enough,
+   357→        missingCount=missing_count,
+   358→        outlierCount=outlier_count,
+   359→        canCalculate=can_calculate,
+   360→        updatedAt=str(updated_at) if updated_at else "",
+   361→        # V4 新增
+   362→        qualityStatus=quality_status,
+   363→        abnormalReason=abnormal_reason,
+   364→        isStale=is_stale,
+   365→        staleLevel=stale_level,
+   366→        staleReason=stale_reason,
+   367→        percentileWindow=percentile_window,
+   368→        rawValue=raw_value,
+   369→        cleanValue=clean_value,
+   370→        isValid=is_valid,
+   371→        # V4.1 新增
+   372→        qualityScore=quality_score_val,
+   373→        canUseForRule=can_use_for_rule_val,
+   374→        canUseForStrongRule=can_use_for_strong_rule_val,
+   375→        singleSourceWarning=single_source_warning_val,
+   376→        sourceConflict=source_conflict_val,
+   377→    )
+   378→
+   379→
+   380→def _fmt_pct(v: Optional[float]) -> str:
+   381→    if v is None:
+   382→        return "—"
+   383→    return f"{v:.1f}%"
+   384→
+   385→
+   386→# ─── Rule evaluation helpers (return structured RuleHit) ──────────────────────
+   387→
+   388→def _rule_matches(rule, code: str) -> bool:
+   389→    """Check whether a rule applies to this code (scope check)."""
+   390→    if rule.applicable_scope == "all":
+   391→        return True
+   392→    # specific scope: code must be in applicable_codes
+   393→    return code in (rule.applicable_codes or [])
+   394→
+   395→
+   396→def _check_veto_hits(
+   397→    code: str,
+   398→    current_ratio: float,
+   399→    target_ratio: float,
+   400→    pe_percentile: Optional[float],
+   401→    premium_today: Optional[float],
+   402→    data_quality: DataQuality,
+   403→    rules: list,
+   404→    premium_7d_avg: Optional[float] = None,
+   405→    premium_3d_avg: Optional[float] = None,
+   406→) -> list[RuleHit]:
+   407→    """Check hard veto rules. Returns list of RuleHit objects.
+   408→    
+   409→    V4.2 策略书§5.1: 硬否决只保留:
+   410→    - 黑名单
+   411→    - 数据严重异常(质量不可用)
+   412→    - QDII溢价红线(当日>3% 且 3日均值>2.5%)
+   413→    - 停牌/流动性异常
+   414→    PE/PB高估不再是硬否决, 改为软风控(见 _check_soft_wind_control)。
+   415→    """
+   416→    hits: list[RuleHit] = []
+   417→
+   418→    # 1) Data quality veto — conservative: key data missing → don't auto-buy
+   419→    if not data_quality.can_calculate:
+   420→        missing_hint = "PE分位缺失" if code not in QDII_CODES else "溢价率缺失"
+   421→        hits.append(RuleHit(
+   422→            ruleType="veto",
+   423→            ruleName="数据质量否决",
+   424→            conditionText=f"关键数据{missing_hint}或样本不足({data_quality.sample_days}天<{data_quality.required_sample_days}天)",
+   425→            actualValue=missing_hint,
+   426→            threshold=str(data_quality.required_sample_days),
+   427→            effect="本周不买入，等待数据补全",
+   428→        ))
+   429→
+   430→    # V4.1 §10.8: 质量评分门槛否决 — 买入需 >=75
+   431→    # can_use_for_rule=False 表示质量分 <75，强制否决买入
+   432→    if data_quality.can_calculate and not data_quality.can_use_for_rule:
+   433→        score = data_quality.quality_score
+   434→        hits.append(RuleHit(
+   435→            ruleType="veto",
+   436→            ruleName="数据质量评分否决",
+   437→            conditionText=f"数据质量评分 {score} < 75（买入门槛）",
+   438→            actualValue=f"{score}分" if score is not None else "无评分",
+   439→            threshold="75",
+   440→            effect="本周不买入，数据可信度不足",
+   441→        ))
+   442→
+   443→    # V4.1 §10.9 / S2-T8: 主备源冲突熔断 — 主备源差异超阈值
+   444→    # 触发条件：cross_check_log 最新记录 quality_status='source_inconsistent'
+   445→    # 效果：阻断买入，需人工确认主备源哪个为准
+   446→    if data_quality.source_conflict:
+   447→        hits.append(RuleHit(
+   448→            ruleType="veto",
+   449→            ruleName="主备源冲突熔断",
+   450→            conditionText="主备源数据差异超阈值，无法自动判定哪个为准",
+   451→            actualValue="source_inconsistent",
+   452→            threshold="≤容忍阈值",
+   453→            effect="本周不买入，请人工确认数据源",
+   454→        ))
+   455→
+   456→    # V4.1 §10.9 / S2-T5: 单源场景提示（info 级别，不阻断买入但限制强再平衡）
+   457→    # 不加 veto，但通过 can_use_for_strong_rule=False 在再平衡引擎里限制
+   458→    # 这里仅作为 audit 记录，让前端展示该 ETF 处于单源场景
+   459→    if data_quality.single_source_warning and data_quality.can_calculate:
+   460→        hits.append(RuleHit(
+   461→            ruleType="info",
+   462→            ruleName="单源场景提示",
+   463→            conditionText="该指标仅有单一数据源可用（备源未配置/不可用/拉取失败）",
+   464→            actualValue="single_source",
+   465→            threshold="双源校验",
+   466→            effect="本周可买入，但不参与强再平衡规则",
+   467→        ))
+   468→
+   469→    for rule in rules:
+   470→        if not rule.is_enabled:
+   471→            continue
+   472→        if rule.type != "veto":
+   473→            continue
+   474→        if not _rule_matches(rule, code):
+   475→            continue
+   476→
+   477→        threshold = rule.threshold_value
+   478→        threshold_max = rule.threshold_value_max
+   479→
+   480→        if "blacklist" in rule.id.lower() or "黑名单" in rule.name:
+   481→            if code in (rule.applicable_codes or []):
+   482→                hits.append(RuleHit(
+   483→                    ruleType="veto",
+   484→                    ruleName=rule.name,
+   485→                    conditionText="ETF 在黑名单中",
+   486→                    actualValue=code,
+   487→                    threshold="",
+   488→                    effect="本周不买入",
+   489→                ))
+   490→
+   491→        elif "high_pe" in rule.id.lower() or "极高分位" in rule.name:
+   492→            # V4.2 策略书§5: PE/PB高估不再是硬否决, 改为软风控
+   493→            # 软风控逻辑在 _check_soft_wind_control 中处理
+   494→            pass
+   495→
+   496→        elif "qdii_premium" in rule.id.lower() or "溢价红线" in rule.name:
+   497→            # V4.2 策略书§8.1: QDII硬否决 — 当日>3% 且 3日均>2.5%
+   498→            if code in (rule.applicable_codes or []) and premium_today is not None and premium_today > QDII_PREMIUM_HARD_VETO_TODAY:
+   499→                avg_confirm = True
+   500→                avg_hint = ""
+   501→                soft_only = False
+   502→                if premium_3d_avg is not None:
+   503→                    if premium_3d_avg < QDII_PREMIUM_HARD_VETO_3D_AVG:
+   504→                        avg_confirm = False
+   505→                        soft_only = True
+   506→                        avg_hint = f"（3日均{premium_3d_avg:.2f}%<{QDII_PREMIUM_HARD_VETO_3D_AVG}%，可能偶发，降级为软风控）"
+   507→                if avg_confirm:
+   508→                    hits.append(RuleHit(
+   509→                        ruleType="veto",
+   510→                        ruleName=rule.name,
+   511→                        conditionText=f"QDII溢价率 > {QDII_PREMIUM_HARD_VETO_TODAY}% 且 3日均 > {QDII_PREMIUM_HARD_VETO_3D_AVG}%{avg_hint}",
+   512→                        actualValue=f"{premium_today:.2f}% / 3日均{premium_3d_avg:.2f}%" if premium_3d_avg is not None else f"{premium_today:.2f}%",
+   513→                        threshold=f">{QDII_PREMIUM_HARD_VETO_TODAY}% 且 3日均>{QDII_PREMIUM_HARD_VETO_3D_AVG}%",
+   514→                        effect="本周不买入（硬否决）",
+   515→                    ))
+   516→                elif soft_only:
+   517→                    hits.append(RuleHit(
+   518→                        ruleType="info",
+   519→                        ruleName=rule.name + "（软风控）",
+   520→                        conditionText=f"QDII溢价率 > {QDII_PREMIUM_HARD_VETO_TODAY}%{avg_hint}",
+   521→                        actualValue=f"{premium_today:.2f}% / 3日均{premium_3d_avg:.2f}%",
+   522→                        threshold=f">{QDII_PREMIUM_HARD_VETO_TODAY}%",
+   523→                        effect="增强仓受限，基础仓可投",
+   524→                    ))
+   525→
+   526→    return hits
+   527→
+   528→
+   529→def _check_soft_wind_control(
+   530→    code: str,
+   531→    pe_percentile: Optional[float],
+   532→    rules: list,
+   533→) -> tuple[str, list[RuleHit]]:
+   534→    """V4.2 策略书§5.2: 软风控4档检查。
+   535→    
+   536→    返回 (soft_level, hits):
+   537→    - soft_level: none | reduce | forbid_enhancement | minimal_base | pause_all
+   538→    - hits: 软风控命中记录
+   539→    
+   540→    4档逻辑:
+   541→    - 60-80%: reduce (增强仓减量×0.5, 基础仓正常)
+   542→    - 80-90%: forbid_enhancement (禁增强仓, 仅基础仓)
+   543→    - 90-95%: minimal_base (仅严重欠配时极小额基础仓)
+   544→    - >95%: pause_all (暂停新增, 基础仓+增强仓都停)
+   545→    """
+   546→    hits: list[RuleHit] = []
+   547→    soft_level = "none"
+   548→    
+   549→    if pe_percentile is None:
+   550→        return soft_level, hits
+   551→    
+   552→    for rule in rules:
+   553→        if not rule.is_enabled:
+   554→            continue
+   555→        # 检查 soft_veto_enhancement 和 soft_veto_all 类型的规则
+   556→        if rule.type not in ("soft_veto_enhancement", "soft_veto_all"):
+   557→            continue
+   558→        if not _rule_matches(rule, code):
+   559→            continue
+   560→        
+   561→        threshold = rule.threshold_value
+   562→        threshold_max = rule.threshold_value_max
+   563→        
+   564→        if rule.type == "soft_veto_enhancement":
+   565→            # 80-90% 或 90-95% 区间
+   566→            if threshold_max is not None and threshold is not None:
+   567→                if threshold <= pe_percentile < threshold_max:
+   568→                    if threshold >= 90:
+   569→                        soft_level = "minimal_base"
+   570→                        hits.append(RuleHit(
+   571→                            ruleType="info",
+   572→                            ruleName=rule.name,
+   573→                            conditionText=f"PE分位 {pe_percentile:.1f}% 在 {threshold}-{threshold_max}% 区间",
+   574→                            actualValue=f"{pe_percentile:.1f}%",
+   575→                            threshold=f"{threshold}-{threshold_max}%",
+   576→                            effect="仅严重欠配时允许极小额基础仓",
+   577→                        ))
+   578→                    else:
+   579→                        soft_level = "forbid_enhancement"
+   580→                        hits.append(RuleHit(
+   581→                            ruleType="info",
+   582→                            ruleName=rule.name,
+   583→                            conditionText=f"PE分位 {pe_percentile:.1f}% 在 {threshold}-{threshold_max}% 区间",
+   584→                            actualValue=f"{pe_percentile:.1f}%",
+   585→                            threshold=f"{threshold}-{threshold_max}%",
+   586→                            effect="禁止增强仓，仅允许基础仓",
+   587→                        ))
+   588→        elif rule.type == "soft_veto_all":
+   589→            # V5.0 Sprint1 E4 — 极端估值软停止(>95%暂停新增):
+   590→            # 当 PE 分位 ≥ 95% 时, 基础仓+增强仓全部暂停新增,
+   591→            # 仅当用户策略手动允许时可豁免(目前无豁免路径, 严格执行)。
+   592→            # 这是 V4.2 §5.2 第4档 soft_veto_all 在 V5.0 的延续, 逻辑保持不变。
+   593→            if threshold is not None and pe_percentile >= threshold:
+   594→                soft_level = "pause_all"
+   595→                hits.append(RuleHit(
+   596→                    ruleType="info",
+   597→                    ruleName=rule.name,
+   598→                    conditionText=f"PE分位 {pe_percentile:.1f}% >= {threshold}%",
+   599→                    actualValue=f"{pe_percentile:.1f}%",
+   600→                    threshold=f">={threshold}%",
+   601→                    effect="暂停新增（基础仓+增强仓都停）",
+   602→                ))
+   603→    
+   604→    # 同时检查 reduce 类型的 PE 规则(60-80%)
+   605→    if soft_level == "none":
+   606→        for rule in rules:
+   607→            if not rule.is_enabled:
+   608→                continue
+   609→            if rule.type != "reduce":
+   610→                continue
+   611→            if not _rule_matches(rule, code):
+   612→                continue
+   613→            if "high_pe" in rule.id.lower() or "偏高" in rule.name:
+   614→                threshold = rule.threshold_value
+   615→                threshold_max = rule.threshold_value_max
+   616→                if threshold is not None and threshold_max is not None:
+   617→                    if threshold <= pe_percentile < threshold_max:
+   618→                        soft_level = "reduce"
+   619→                        # reduce 命中由 _check_reduce_hits 正式记录, 这里只标记级别
+   620→                        break
+   621→    
+   622→    return soft_level, hits
+   623→
+   624→
+   625→def _check_reduce_hits(
+   626→    code: str,
+   627→    current_ratio: float,
+   628→    target_ratio: float,
+   629→    pe_percentile: Optional[float],
+   630→    premium_today: Optional[float],
+   631→    rules: list,
+   632→) -> list[RuleHit]:
+   633→    """Check reduce rules. Returns list of RuleHit objects.
+   634→
+   635→    V4.2 §6.4 metric_direction 防呆:
+   636→      - PE分位 / QDII溢价率 / 持仓过度集中 都是 higher_is_expensive 方向
+   637→        (值高于阈值 = 偏贵 → 应触发 reduce)
+   638→      - 股息率 / 股息率利差 是 higher_is_cheaper 方向(值低于阈值 = 偏贵),
+   639→        但当前 reduce 规则集里无股息率相关 reduce 规则(红利ETF用 _check_dividend_rebalance 单独处理),
+   640→        因此本函数现有比较逻辑均为 value > threshold, 与方向一致, 无需修改。
+   641→      - 未来若新增股息率 reduce 规则, 应使用 _is_metric_expensive() 辅助函数判断方向,
+   642→        避免逻辑写反。
+   643→    """
+   644→    hits: list[RuleHit] = []
+   645→
+   646→    for rule in rules:
+   647→        if not rule.is_enabled:
+   648→            continue
+   649→        if rule.type != "reduce":
+   650→            continue
+   651→        if not _rule_matches(rule, code):
+   652→            continue
+   653→
+   654→        threshold = rule.threshold_value
+   655→        threshold_max = rule.threshold_value_max
+   656→
+   657→        if "qdii_premium" in rule.id.lower() or "溢价预警" in rule.name:
+   658→            # QDII premium in [threshold, threshold_max] (default 2~3)
+   659→            # 方向: higher_is_expensive (溢价越高越贵, 进入[2%, 3%]区间触发 reduce)
+   660→            if (
+   661→                premium_today is not None
+   662→                and threshold is not None
+   663→                and threshold_max is not None
+   664→                and threshold <= premium_today <= threshold_max
+   665→            ):
+   666→                hits.append(RuleHit(
+   667→                    ruleType="reduce",
+   668→                    ruleName=rule.name,
+   669→                    conditionText=f"{threshold}% ≤ 溢价率 ≤ {threshold_max}%",
+   670→                    actualValue=f"{premium_today:.2f}%",
+   671→                    threshold=f"{threshold}~{threshold_max}%",
+   672→                    effect="额度×0.5",
+   673→                ))
+   674→
+   675→        elif "high_pe" in rule.id.lower() or "偏高" in rule.name:
+   676→            # 方向: higher_is_expensive (PE分位越高越贵, 进入[60%, 80%]区间触发 reduce)
+   677→            if (
+   678→                pe_percentile is not None
+   679→                and threshold is not None
+   680→                and threshold_max is not None
+   681→                and threshold <= pe_percentile <= threshold_max
+   682→            ):
+   683→                hits.append(RuleHit(
+   684→                    ruleType="reduce",
+   685→                    ruleName=rule.name,
+   686→                    conditionText=f"{threshold}% ≤ PE分位 ≤ {threshold_max}%",
+   687→                    actualValue=f"{pe_percentile:.1f}%",
+   688→                    threshold=f"{threshold}~{threshold_max}%",
+   689→                    effect="额度×0.5",
+   690→                ))
+   691→
+   692→        elif "over_concentrated" in rule.id.lower() or "过度集中" in rule.name:
+   693→            # current_ratio > target_ratio * threshold (default 1.5)
+   694→            # 方向: higher_is_expensive (持仓占比偏离目标越高越贵)
+   695→            if (
+   696→                target_ratio > 0
+   697→                and threshold is not None
+   698→                and current_ratio > target_ratio * threshold
+   699→            ):
+   700→                pct_cur = current_ratio * 100
+   701→                pct_tgt = target_ratio * 100
+   702→                hits.append(RuleHit(
+   703→                    ruleType="reduce",
+   704→                    ruleName=rule.name,
+   705→                    conditionText=f"当前占比 > 目标占比 × {threshold}",
+   706→                    actualValue=f"当前{pct_cur:.1f}% / 目标{pct_tgt:.1f}%",
+   707→                    threshold=f"目标×{threshold}",
+   708→                    effect="额度×0.5",
+   709→                ))
+   710→
+   711→    return hits
+   712→
+   713→
+   714→def _check_boost_hits(
+   715→    code: str,
+   716→    current_ratio: float,
+   717→    target_ratio: float,
+   718→    pe_percentile: Optional[float],
+   719→    rules: list,
+   720→) -> list[RuleHit]:
+   721→    """Check boost rules. Returns list of RuleHit objects.
+   722→
+   723→    V4.2 §6.4 metric_direction 防呆:
+   724→      - boost 是"加仓"信号, 触发条件与 reduce 相反
+   725→      - PE极度低估 (PE分位<threshold) — PE方向是 higher_is_expensive,
+   726→        低于阈值 = 偏便宜 → 触发 boost, 与现有 pe_percentile < threshold 一致
+   727→      - 负偏离过大 (持仓占比 < target×threshold) — 偏离度方向 higher_is_expensive,
+   728→        低于阈值 = 严重欠配 → 触发 boost
+   729→      - 股息率类 boost 规则若未来新增, 应用 _is_metric_expensive() 判断:
+   730→        股息率 > threshold = 便宜 → 应触发 boost (与 PE 反向)
+   731→
+   732→    V5.0 Sprint1 E4 — 红利ETF反向分位(明确注释):
+   733→      红利ETF(510880)的股息率分位是 higher_is_cheaper (越高越便宜),
+   734→      因此买入侧 boost 触发条件应为 `dy_pct > threshold` (分位高=便宜=该买),
+   735→      与 PE 的 `pe_percentile < threshold` (分位低=便宜=该买) 反向。
+   736→      当前 reduce/boost 规则集里没有股息率相关规则(红利ETF再平衡由
+   737→      _check_dividend_rebalance 单独处理), 但未来若新增需严格遵守此方向。
+   738→    """
+   739→    hits: list[RuleHit] = []
+   740→
+   741→    for rule in rules:
+   742→        if not rule.is_enabled:
+   743→            continue
+   744→        if rule.type != "boost":
+   745→            continue
+   746→        if not _rule_matches(rule, code):
+   747→            continue
+   748→
+   749→        threshold = rule.threshold_value
+   750→
+   751→        if "very_low_pe" in rule.id.lower() or "极度低估" in rule.name:
+   752→            # 方向: higher_is_expensive (PE分位越低越便宜, < 20% 触发 boost)
+   753→            if pe_percentile is not None and threshold is not None and pe_percentile < threshold:
+   754→                hits.append(RuleHit(
+   755→                    ruleType="boost",
+   756→                    ruleName=rule.name,
+   757→                    conditionText=f"PE分位 < {threshold}%",
+   758→                    actualValue=f"{pe_percentile:.1f}%",
+   759→                    threshold=f"{threshold}%",
+   760→                    effect="额度×2.0",
+   761→                ))
+   762→
+   763→        elif "large_negative_deviation" in rule.id.lower() or "负偏离" in rule.name:
+   764→            # current_ratio < target_ratio * threshold (default 0.5)
+   765→            # 方向: higher_is_expensive (偏离度越低越欠配, < 目标×0.5 触发 boost)
+   766→            if (
+   767→                target_ratio > 0
+   768→                and threshold is not None
+   769→                and current_ratio < target_ratio * threshold
+   770→            ):
+   771→                pct_cur = current_ratio * 100
+   772→                pct_tgt = target_ratio * 100
+   773→                hits.append(RuleHit(
+   774→                    ruleType="boost",
+   775→                    ruleName=rule.name,
+   776→                    conditionText=f"当前占比 < 目标占比 × {threshold}",
+   777→                    actualValue=f"当前{pct_cur:.1f}% / 目标{pct_tgt:.1f}%",
+   778→                    threshold=f"目标×{threshold}",
+   779→                    effect="额度×2.0",
+   780→                ))
+   781→
+   782→    return hits
+   783→
+   784→
+   785→# ─── reason_summary builder ──────────────────────────────────────────────────
+   786→
+   787→def _build_reason_summary(
+   788→    *,
+   789→    vetoed: bool,
+   790→    veto_hits: list[RuleHit],
+   791→    reduce_hits: list[RuleHit],
+   792→    boost_hits: list[RuleHit],
+   793→    over_allocated: bool,
+   794→    current_ratio: float,
+   795→    target_ratio: float,
+   796→    pe_percentile: Optional[float],
+   797→    premium_today: Optional[float],
+   798→) -> str:
+   799→    if vetoed:
+   800→        # Find the dominant veto cause for a concise summary
+   801→        if veto_hits:
+   802→            # Prefer data-quality veto first (it has its own distinct format)
+   803→            for h in veto_hits:
+   804→                if "数据质量" in h.rule_name:
+   805→                    return f"{h.actual_value}，样本不足，触发一票否决，本周不买。"
+   806→            # Then PE percentile veto (condition_text contains "PE分位 >" and actual_value is a percentile number)
+   807→            for h in veto_hits:
+   808→                if "PE分位" in h.condition_text and "缺失" not in h.actual_value:
+   809→                    return f"PE分位{h.actual_value}超过{h.threshold}红线，触发一票否决，本周不买。"
+   810→            # Then QDII premium veto (condition_text contains "QDII溢价率 >" and actual_value is a premium number)
+   811→            for h in veto_hits:
+   812→                if "QDII溢价率" in h.condition_text and "缺失" not in h.actual_value:
+   813→                    return f"QDII溢价率{h.actual_value}超过{h.threshold}红线，触发一票否决，本周不买。"
+   814→            # Then blacklist veto
+   815→            for h in veto_hits:
+   816→                if "黑名单" in h.rule_name or "黑名单" in h.condition_text:
+   817→                    return f"该ETF在{h.rule_name}中，本周不买。"
+   818→            # Generic veto fallback
+   819→            return f"触发{veto_hits[0].rule_name}，本周不买。"
+   820→        return "触发一票否决，本周不买。"
+   821→
+   822→    if over_allocated:
+   823→        pct_cur = current_ratio * 100
+   824→        pct_tgt = target_ratio * 100
+   825→        return f"当前占比{pct_cur:.1f}%高于目标{pct_tgt:.0f}%，已超配，本周不补仓。"
+   826→
+   827→    if reduce_hits:
+   828→        # Use the first reduce hit for the headline
+   829→        h = reduce_hits[0]
+   830→        if "PE分位" in h.condition_text:
+   831→            return f"PE分位{h.actual_value}处于偏高区间，触发减量规则，额度减半。"
+   832→        if "溢价率" in h.condition_text:
+   833→            return f"溢价率{h.actual_value}处于预警区间，触发减量规则，额度减半。"
+   834→        if "当前占比" in h.condition_text:
+   835→            return f"当前占比超过目标{h.threshold}，触发减量规则，额度减半。"
+   836→        return f"触发{h.rule_name}，额度减半。"
+   837→
+   838→    if boost_hits:
+   839→        h = boost_hits[0]
+   840→        if "PE分位" in h.condition_text:
+   841→            return f"PE分位{h.actual_value}处于极度低估区间，触发加量规则，额度翻倍。"
+   842→        if "当前占比" in h.condition_text:
+   843→            return f"当前占比远低于目标{h.threshold}，触发加量规则，额度翻倍。"
+   844→        return f"触发{h.rule_name}，额度翻倍。"
+   845→
+   846→    return "估值与配置正常，按目标缺口比例分配预算。"
+   847→
+   848→
+   849→# ─── Rebalance Engine (V4 strategy doc §7) ────────────────────────────────────
+   850→#
+   851→# 再平衡不是清仓择时，而是当资产同时满足「极高估 + 明显超配」时，
+   852→# 卖出超配部分，维护组合纪律。卖的是超配部分，不卖核心底仓。
+   853→#
+   854→# 三类标的差异化规则：
+   855→#   A股宽基(§7.2): PE/PB分位>90%且超配≥5pp → 卖超额30%
+   856→#                   PE/PB分位>95%且超配≥8pp → 卖超额50%
+   857→#   红利ETF(§7.3): 股息率分位<15%且超配≥5pp → 卖超额30%
+   858→#                   股息率分位<10%且超配≥8pp → 卖超额50%
+   859→#   美股宽基(§7.4): PE分位>95%且超配≥10pp → 卖超额20%
+   860→#                    QDII溢价>5%且超配≥5pp → 卖超额30%~50%
+   861→#
+   862→# 超额市值 = 当前持仓市值 - 当前定投资产总额 × 目标占比
+   863→# 卖出金额 = 超额市值 × 卖出比例
+   864→# 资金去向：华宝添益(511990)
+   865→#
+   866→# 注：当前数据层只有单个 pe_percentile（本质5年分位）和 dividend_yield（原始值）。
+   867→# 迭代2将引入多周期(1/3/5/10年)分位。此处先用现有分位作为估值判据，红利用
+   868→# 股息率历史分位（若缓存有 dividend_yield_percentile 则用之，否则用原始股息率反推）。
+   869→
+   870→def _check_a_share_rebalance(
+   871→    code: str,
+   872→    name: str,
+   873→    pe_percentile: Optional[float],
+   874→    pb_percentile: Optional[float],
+   875→    current_ratio_pct: float,
+   876→    target_ratio_pct: float,
+   877→    current_value: float,
+   878→    invested_total: float,
+   879→) -> Optional[RebalanceSuggestion]:
+   880→    """A股宽基再平衡（§7.2）。current_ratio/target_ratio 传入百分点（如 23.0 表示 23%）。"""
+   881→    # 取 PE/PB 分位中较高者作为估值判据（保守）
+   882→    valuation = None
+   883→    metric = ""
+   884→    if pe_percentile is not None and pb_percentile is not None:
+   885→        if pe_percentile >= pb_percentile:
+   886→            valuation, metric = pe_percentile, "pe_percentile"
+   887→        else:
+   888→            valuation, metric = pb_percentile, "pb_percentile"
+   889→    elif pe_percentile is not None:
+   890→        valuation, metric = pe_percentile, "pe_percentile"
+   891→    elif pb_percentile is not None:
+   892→        valuation, metric = pb_percentile, "pb_percentile"
+   893→
+   894→    if valuation is None:
+   895→        return None  # 数据不足，不触发强卖出（§7.2 + §3.2 样本不足规则）
+   896→
+   897→    over_pp = current_ratio_pct - target_ratio_pct  # 超配百分点
+   898→    target_value = invested_total * (target_ratio_pct / 100.0)
+   899→    excess_value = current_value - target_value
+   900→
+   901→    if excess_value <= 0:
+   902→        return None  # 未超配，不卖（即使极高估也只暂停新增）
+   903→
+   904→    # Level2: 分位>95% 且 超配≥8pp → 卖50%
+   905→    if valuation > 95 and over_pp >= 8:
+   906→        sell_ratio, level, threshold_desc = 0.5, "level2", f"PE/PB分位{valuation:.1f}%>95% 且 超配{over_pp:.1f}pp≥8pp"
+   907→    # Level1: 分位>90% 且 超配≥5pp → 卖30%
+   908→    elif valuation > 90 and over_pp >= 5:
+   909→        sell_ratio, level, threshold_desc = 0.3, "level1", f"PE/PB分位{valuation:.1f}%>90% 且 超配{over_pp:.1f}pp≥5pp"
+   910→    else:
+   911→        return None  # 不满足双条件
+   912→
+   913→    sell_amount = int(round(excess_value * sell_ratio))
+   914→    if sell_amount < 100:
+   915→        return None  # 金额过小不值得再平衡
+   916→
+   917→    reason = (
+   918→        f"{name} {metric}={valuation:.1f}%处于极高估区间，当前占比{current_ratio_pct:.1f}%"
+   919→        f"超过目标{target_ratio_pct:.1f}%达{over_pp:.1f}pp，触发{level}再平衡，"
+   920→        f"卖出超额市值¥{excess_value:,.0f}的{int(sell_ratio*100)}%=¥{sell_amount:,}，资金转入华宝添益。"
+   921→    )
+   922→
+   923→    return RebalanceSuggestion(
+   924→        code=code, name=name,
+   925→        trigger_type="a_share_pe", trigger_level=level,
+   926→        valuation_metric=metric, valuation_value=valuation, valuation_threshold=threshold_desc,
+   927→        target_ratio=target_ratio_pct / 100.0, current_ratio=current_ratio_pct / 100.0,
+   928→        deviation_pp=round(over_pp, 2), over_concentration_pp=round(max(over_pp, 0), 2),
+   929→        current_value=current_value, target_value=round(target_value, 2),
+   930→        excess_value=round(excess_value, 2), sell_ratio=sell_ratio, sell_amount=sell_amount,
+   931→        cash_destination=CASH_POOL_CODE, reason_summary=reason,
+   932→        rules_hit=[RuleHit(
+   933→            rule_type="rebalance", rule_name=f"A股宽基再平衡-{level}",
+   934→            condition_text=threshold_desc,
+   935→            actual_value=f"分位{valuation:.1f}%/超配{over_pp:.1f}pp/超额¥{excess_value:,.0f}",
+   936→            threshold=f"卖出{int(sell_ratio*100)}%", effect=f"卖出¥{sell_amount:,}→华宝添益",
+   937→        )],
+   938→    )
+   939→
+   940→
+   941→def _check_dividend_rebalance(
+   942→    code: str,
+   943→    name: str,
+   944→    dividend_yield: Optional[float],
+   945→    dividend_yield_percentile: Optional[float],
+   946→    current_ratio_pct: float,
+   947→    target_ratio_pct: float,
+   948→    current_value: float,
+   949→    invested_total: float,
+   950→) -> Optional[RebalanceSuggestion]:
+   951→    """红利ETF再平衡（§7.3）。股息率分位低=贵。
+   952→
+   953→    V5.0 Sprint1 E4 — 红利ETF反向分位(明确注释):
+   954→    股息率分位(dividend_yield_percentile)与 PE/PB 分位方向相反:
+   955→      - PE/PB 分位: higher_is_expensive (分位越高=越贵)
+   956→      - 股息率分位: higher_is_cheaper  (分位越高=越便宜, 反向)
+   957→
+   958→    因此卖出触发条件用 `dy_pct < threshold` (分位低=贵=该卖),
+   959→    与 _check_a_share_rebalance 中 `valuation > 95` (分位高=贵=该卖) 反向。
+   960→    此方向在 config.METRIC_DIRECTION 中已显式声明:
+   961→      dividend_yield / dividend_yield_percentile / dividend_bond_spread
+   962→      均为 higher_is_cheaper。当前代码(L955/L958 用 < threshold)符合反向语义。
+   963→    """
+   964→    # 优先用股息率分位；若只有原始股息率，无法算分位则不触发强规则（保守）
+   965→    dy_pct = dividend_yield_percentile
+   966→    if dy_pct is None:
+   967→        return None  # 缺分位数据，不触发（迭代2补多周期分位后可完善）
+   968→
+   969→    over_pp = current_ratio_pct - target_ratio_pct
+   970→    target_value = invested_total * (target_ratio_pct / 100.0)
+   971→    excess_value = current_value - target_value
+   972→
+   973→    if excess_value <= 0:
+   974→        return None
+   975→
+   976→    # V5.0 E4 反向分位: dy_pct < 10 表示股息率分位极低=价格偏贵=应卖
+   977→    # Level2: 股息率分位<10% 且 超配≥8pp → 卖50%
+   978→    if dy_pct < 10 and over_pp >= 8:
+   979→        sell_ratio, level, threshold_desc = 0.5, "level2", f"股息率分位{dy_pct:.1f}%<10% 且 超配{over_pp:.1f}pp≥8pp"
+   980→    # V5.0 E4 反向分位: dy_pct < 15 表示股息率分位偏低=价格偏贵=应卖
+   981→    # Level1: 股息率分位<15% 且 超配≥5pp → 卖30%
+   982→    elif dy_pct < 15 and over_pp >= 5:
+   983→        sell_ratio, level, threshold_desc = 0.3, "level1", f"股息率分位{dy_pct:.1f}%<15% 且 超配{over_pp:.1f}pp≥5pp"
+   984→    else:
+   985→        return None
+   986→
+   987→    sell_amount = int(round(excess_value * sell_ratio))
+   988→    if sell_amount < 100:
+   989→        return None
+   990→
+   991→    reason = (
+   992→        f"{name} 股息率分位{dy_pct:.1f}%偏低（价格相对偏贵），当前占比{current_ratio_pct:.1f}%"
+   993→        f"超过目标{target_ratio_pct:.1f}%达{over_pp:.1f}pp，触发{level}再平衡，"
+   994→        f"卖出超额市值¥{excess_value:,.0f}的{int(sell_ratio*100)}%=¥{sell_amount:,}，资金转入华宝添益。"
+   995→    )
+   996→
+   997→    return RebalanceSuggestion(
+   998→        code=code, name=name,
+   999→        trigger_type="dividend_yield", trigger_level=level,
+  1000→        valuation_metric="dividend_yield_percentile", valuation_value=dy_pct, valuation_threshold=threshold_desc,
+  1001→        target_ratio=target_ratio_pct / 100.0, current_ratio=current_ratio_pct / 100.0,
+  1002→        deviation_pp=round(over_pp, 2), over_concentration_pp=round(max(over_pp, 0), 2),
+  1003→        current_value=current_value, target_value=round(target_value, 2),
+  1004→        excess_value=round(excess_value, 2), sell_ratio=sell_ratio, sell_amount=sell_amount,
+  1005→        cash_destination=CASH_POOL_CODE, reason_summary=reason,
+  1006→        rules_hit=[RuleHit(
+  1007→            rule_type="rebalance", rule_name=f"红利ETF再平衡-{level}",
+  1008→            condition_text=threshold_desc,
+  1009→            actual_value=f"股息率分位{dy_pct:.1f}%/超配{over_pp:.1f}pp/超额¥{excess_value:,.0f}",
+  1010→            threshold=f"卖出{int(sell_ratio*100)}%", effect=f"卖出¥{sell_amount:,}→华宝添益",
+  1011→        )],
+  1012→    )
+  1013→
+  1014→
+  1015→def _check_us_share_rebalance(
+  1016→    code: str,
+  1017→    name: str,
+  1018→    pe_percentile: Optional[float],
+  1019→    premium_today: Optional[float],
+  1020→    current_ratio_pct: float,
+  1021→    target_ratio_pct: float,
+  1022→    current_value: float,
+  1023→    invested_total: float,
+  1024→) -> Optional[RebalanceSuggestion]:
+  1025→    """美股宽基再平衡（§7.4）。PE分位或QDII溢价两条触发路径。
+  1026→
+  1027→    PE分位>95%且超配≥10pp → 极端再平衡卖超额20%
+  1028→    QDII溢价>5%且超配≥5pp → 情绪溢价再平衡卖超额30%~50%（取0.4中值）
+  1029→    关键原则：QDII高溢价对买入是坏事；若已满足再平衡条件，高溢价是更好的卖出窗口。
+  1030→    """
+  1031→    over_pp = current_ratio_pct - target_ratio_pct
+  1032→    target_value = invested_total * (target_ratio_pct / 100.0)
+  1033→    excess_value = current_value - target_value
+  1034→
+  1035→    if excess_value <= 0:
+  1036→        return None
+  1037→
+  1038→    # 优先检查 QDII 溢价路径（情绪溢价再平衡，卖出窗口更好）
+  1039→    if premium_today is not None and premium_today > 5 and over_pp >= 5:
+  1040→        sell_ratio, level, threshold_desc = 0.4, "level2", f"QDII溢价{premium_today:.2f}%>5% 且 超配{over_pp:.1f}pp≥5pp"
+  1041→        trigger_type, metric, val = "us_qdii_premium", "premium_today", premium_today
+  1042→    # 再检查 PE 分位路径（极端再平衡，更克制）
+  1043→    elif pe_percentile is not None and pe_percentile > 95 and over_pp >= 10:
+  1044→        sell_ratio, level, threshold_desc = 0.2, "level1", f"PE分位{pe_percentile:.1f}%>95% 且 超配{over_pp:.1f}pp≥10pp"
+  1045→        trigger_type, metric, val = "us_pe", "pe_percentile", pe_percentile
+  1046→    else:
+  1047→        return None
+  1048→
+  1049→    sell_amount = int(round(excess_value * sell_ratio))
+  1050→    if sell_amount < 100:
+  1051→        return None
+  1052→
+  1053→    reason = (
+  1054→        f"{name} {threshold_desc}，触发美股{level}再平衡，"
+  1055→        f"卖出超额市值¥{excess_value:,.0f}的{int(sell_ratio*100)}%=¥{sell_amount:,}，资金转入华宝添益。"
+  1056→        + ("（QDII高溢价提供更好的卖出窗口）" if trigger_type == "us_qdii_premium" else "")
+  1057→    )
+  1058→
+  1059→    return RebalanceSuggestion(
+  1060→        code=code, name=name,
+  1061→        trigger_type=trigger_type, trigger_level=level,
+  1062→        valuation_metric=metric, valuation_value=val, valuation_threshold=threshold_desc,
+  1063→        target_ratio=target_ratio_pct / 100.0, current_ratio=current_ratio_pct / 100.0,
+  1064→        deviation_pp=round(over_pp, 2), over_concentration_pp=round(max(over_pp, 0), 2),
+  1065→        current_value=current_value, target_value=round(target_value, 2),
+  1066→        excess_value=round(excess_value, 2), sell_ratio=sell_ratio, sell_amount=sell_amount,
+  1067→        cash_destination=CASH_POOL_CODE, reason_summary=reason,
+  1068→        rules_hit=[RuleHit(
+  1069→            rule_type="rebalance", rule_name=f"美股宽基再平衡-{level}",
+  1070→            condition_text=threshold_desc,
+  1071→            actual_value=f"{metric}={val:.2f}/超配{over_pp:.1f}pp/超额¥{excess_value:,.0f}",
+  1072→            threshold=f"卖出{int(sell_ratio*100)}%", effect=f"卖出¥{sell_amount:,}→华宝添益",
+  1073→        )],
+  1074→    )
+  1075→
+  1076→
+  1077→def run_rebalance_engine(
+  1078→    holdings: list,
+  1079→    target_ratios: dict,
+  1080→    market_data: dict,
+  1081→    invested_total: float,
+  1082→) -> list[RebalanceSuggestion]:
+  1083→    """执行再平衡引擎，返回所有触发再平衡的标的。
+  1084→
+  1085→    holdings: list of Holding (含 code/name/market_value/current_ratio)
+  1086→    target_ratios: {code: target_ratio(分数, 如0.18)}
+  1087→    market_data: {code: {pe_percentile, pb_percentile, premium_today, dividend_yield, dividend_yield_percentile...}}
+  1088→    invested_total: 当前定投资产总额（仅6只定投ETF市值之和）
+  1089→    """
+  1090→    rebalance_list: list[RebalanceSuggestion] = []
+  1091→
+  1092→    for h in holdings:
+  1093→        code = h.code
+  1094→        if code not in target_ratios or target_ratios[code] <= 0:
+  1095→            continue  # 非定投标的不参与再平衡
+  1096→
+  1097→        # V4.1 §10.8: 再平衡强规则门槛 — 质量分需 >=90 才允许触发再平衡
+  1098→        # 质量分 <90 时跳过该标的的再平衡检查（保守，宁可少卖不能误卖）
+  1099→        md_for_dq = market_data.get(code, {}) or {}
+  1100→        dq_check = validate_data_quality(code, md_for_dq)
+  1101→        if not dq_check.can_use_for_strong_rule:
+  1102→            logger.info(
+  1103→                f"[REBALANCE] {code} skipped: quality score {dq_check.quality_score} < 90 (strong rule threshold)"
+  1104→            )
+  1105→            continue
+  1106→
+  1107→        target_ratio_pct = target_ratios[code] * 100.0
+  1108→        # current_ratio: 优先用 holdings 里的（已被前端算成百分数并转成分数传入引擎），
+  1109→        # 这里需要百分数。advice/route.ts 传入的 currentRatio 是分数(0~1)。
+  1110→        req_ratio = safe_num(h.current_ratio)
+  1111→        if req_ratio is not None and 0 <= req_ratio <= 1.0:
+  1112→            current_ratio_pct = req_ratio * 100.0
+  1113→        else:
+  1114→            # 回退：用 invested_total 计算
+  1115→            current_ratio_pct = (h.market_value / invested_total * 100.0) if invested_total > 0 else 0.0
+  1116→
+  1117→        md = market_data.get(code, {}) or {}
+  1118→        # V4 多周期估值（策略书§3.1）：再平衡侧优先用10年分位，回退到全历史/默认分位
+  1119→        # 卖出必须更保守，用10年或全历史为主
+  1120→        pe_pct_10y = safe_num(md.get("pe_percentile_10y"))
+  1121→        pe_pct_all = safe_num(md.get("pe_percentile_all"))
+  1122→        pe_pct_default = safe_num(md.get("pe_percentile"))
+  1123→        # 优先级：10y > all > 默认(5y)
+  1124→        pe_pct = pe_pct_10y if pe_pct_10y is not None else (pe_pct_all if pe_pct_all is not None else pe_pct_default)
+  1125→
+  1126→        pb_pct_10y = safe_num(md.get("pb_percentile_10y"))
+  1127→        pb_pct_all = safe_num(md.get("pb_percentile_all"))
+  1128→        pb_pct_default = safe_num(md.get("pb_percentile"))
+  1129→        pb_pct = pb_pct_10y if pb_pct_10y is not None else (pb_pct_all if pb_pct_all is not None else pb_pct_default)
+  1130→
+  1131→        premium = safe_num(md.get("premium_today"))
+  1132→        dy = safe_num(md.get("dividend_yield"))
+  1133→        dy_pct = safe_num(md.get("dividend_yield_percentile"))
+  1134→
+  1135→        suggestion: Optional[RebalanceSuggestion] = None
+  1136→        if code in A_SHARE_REBALANCE_CODES:
+  1137→            suggestion = _check_a_share_rebalance(
+  1138→                code, h.name, pe_pct, pb_pct,
+  1139→                current_ratio_pct, target_ratio_pct, h.market_value, invested_total,
+  1140→            )
+  1141→        elif code in DIVIDEND_REBALANCE_CODES:
+  1142→            suggestion = _check_dividend_rebalance(
+  1143→                code, h.name, dy, dy_pct,
+  1144→                current_ratio_pct, target_ratio_pct, h.market_value, invested_total,
+  1145→            )
+  1146→        elif code in US_SHARE_REBALANCE_CODES:
+  1147→            suggestion = _check_us_share_rebalance(
+  1148→                code, h.name, pe_pct, premium,
+  1149→                current_ratio_pct, target_ratio_pct, h.market_value, invested_total,
+  1150→            )
+  1151→
+  1152→        if suggestion is not None:
+  1153→            rebalance_list.append(suggestion)
+  1154→            logger.info(f"[REBALANCE] {code} {h.name} triggered {suggestion.trigger_level}: sell ¥{suggestion.sell_amount}")
+  1155→
+  1156→    return rebalance_list
+  1157→
+  1158→
+  1159→# ─── Main calculation ─────────────────────────────────────────────────────────
+  1160→
+  1161→def calculate_suggestions(
+  1162→    request: CalculateRequest,
+  1163→    market_data: dict,
+  1164→) -> CalculateResponse:
+  1165→    """Execute the 12-step target-gap-v2 rule engine calculation.
+  1166→
+  1167→    Args:
+  1168→        request: Calculation request with holdings, target_ratios, rules, weekly_budget.
+  1169→        market_data: Dict mapping code -> {pe_percentile, premium_today, premium_7d_avg, ...}
+  1170→
+  1171→    Returns:
+  1172→        CalculateResponse with deterministic allocation results and full audit fields.
+  1173→    """
+  1174→    holdings = request.holdings
+  1175→    target_ratios = {tr.code: tr.target_ratio for tr in request.target_ratios}
+  1176→    rules = request.rules
+  1177→    weekly_budget = request.weekly_budget
+  1178→
+  1179→    holdings_map = {h.code: h for h in holdings}
+  1180→
+  1181→    # V5.0 Sprint1 E1: 计算输入快照哈希(用于确定性复算验证)
+  1182→    # 相同的 holdings + weekly_budget + rules 数量 + 目标比例 → 一定产生相同 hash。
+  1183→    # 配合 strategy_version + calculation_snapshot 表实现"相同输入→相同输出"的可复算语义。
+  1184→    import hashlib as _hashlib
+  1185→    import json as _json
+  1186→    inputs_str = _json.dumps({
+  1187→        "holdings": [
+  1188→            {"code": h.code, "marketValue": h.market_value}
+  1189→            for h in sorted(holdings, key=lambda x: x.code)
+  1190→        ],
+  1191→        "target_ratios": {
+  1192→            k: target_ratios[k] for k in sorted(target_ratios.keys())
+  1193→        },
+  1194→        "weekly_budget": weekly_budget,
+  1195→        "rules_count": len(rules),
+  1196→    }, sort_keys=True, default=str)
+  1197→    inputs_hash = _hashlib.sha256(inputs_str.encode("utf-8")).hexdigest()[:16]
+  1198→
+  1199→    # ──────────────────────────────────────────────
+  1200→    # Step 2: Determine investable codes & invested_asset_value
+  1201→    # ──────────────────────────────────────────────
+  1202→    # investable_codes = codes present in target_ratios with target_ratio > 0
+  1203→    investable_codes = {c for c, r in target_ratios.items() if r > 0}
+  1204→
+  1205→    invested_asset_value = 0.0
+  1206→    for h in holdings:
+  1207→        if h.code in investable_codes:
+  1208→            invested_asset_value += h.market_value
+  1209→
+  1210→    # V4.2 策略书§3.2: 权益配置基准(分母陷阱修复)
+  1211→    # 权益配置基准 = 6只ETF市值 + 再平衡备用金 + 待投权益现金 + QDII挂起资金
+  1212→    cash_balances = request.cash_subaccount_balances or {}
+  1213→    rebalance_equity_reserve = float(cash_balances.get("rebalance_equity_reserve", 0))
+  1214→    weekly_unallocated_cash = float(cash_balances.get("weekly_unallocated_cash", 0))
+  1215→    qdii_pending_cash_sp500 = float(cash_balances.get("qdii_pending_cash_sp500", 0))
+  1216→    qdii_pending_cash_nasdaq = float(cash_balances.get("qdii_pending_cash_nasdaq", 0))
+  1217→    
+  1218→    equity_allocation_base = (
+  1219→        invested_asset_value
+  1220→        + rebalance_equity_reserve
+  1221→        + weekly_unallocated_cash
+  1222→        + qdii_pending_cash_sp500
+  1223→        + qdii_pending_cash_nasdaq
+  1224→    )
+  1225→
+  1226→    # ──────────────────────────────────────────────
+  1227→    # Step 3: after_budget_total (用权益配置基准做分母)
+  1228→    # ──────────────────────────────────────────────
+  1229→    after_budget_total = equity_allocation_base + weekly_budget
+  1230→
+  1231→    # ──────────────────────────────────────────────
+  1232→    # Step 4-5: Compute gap fields & run veto check for each investable holding
+  1233→    # ──────────────────────────────────────────────
+  1234→    per_item: dict[str, dict] = {}
+  1235→
+  1236→    for h in holdings:
+  1237→        code = h.code
+  1238→        if code not in investable_codes:
+  1239→            continue  # non-investable handled later
+  1240→        md = market_data.get(code, {}) or {}
+  1241→        target_ratio = target_ratios.get(code, 0)
+  1242→
+  1243→        current_value = float(h.market_value)
+  1244→        if invested_asset_value > 0:
+  1245→            current_ratio = current_value / invested_asset_value
+  1246→        else:
+  1247→            current_ratio = 0.0
+  1248→        # Override with the request's current_ratio if it's already a fraction and reasonable
+  1249→        # (the request current_ratio is a fraction in [0,1])
+  1250→        req_ratio = safe_num(h.current_ratio)
+  1251→        if req_ratio is not None and 0 <= req_ratio <= 1.0:
+  1252→            current_ratio = req_ratio
+  1253→
+  1254→        target_value_after_budget = after_budget_total * target_ratio
+  1255→        gap_amount = target_value_after_budget - current_value
+  1256→        base_gap_amount = max(0.0, gap_amount)
+  1257→
+  1258→        pe_percentile = safe_num(md.get("pe_percentile"))
+  1259→        pb_percentile = safe_num(md.get("pb_percentile"))
+  1260→        # V4 多周期估值（策略书§3.1）：买入侧优先用5年分位，回退到默认分位
+  1261→        pe_percentile_5y = safe_num(md.get("pe_percentile_5y"))
+  1262→        pb_percentile_5y = safe_num(md.get("pb_percentile_5y"))
+  1263→        buy_pe_percentile = pe_percentile_5y if pe_percentile_5y is not None else pe_percentile
+  1264→        buy_pb_percentile = pb_percentile_5y if pb_percentile_5y is not None else pb_percentile
+  1265→        premium_today = safe_num(md.get("premium_today"))
+  1266→        premium_7d_avg = safe_num(md.get("premium_7d_avg"))
+  1267→        dividend_yield = safe_num(md.get("dividend_yield"))
+  1268→
+  1269→        dq = validate_data_quality(code, md)
+  1270→
+  1271→        veto_hits = _check_veto_hits(
+  1272→            code=code,
+  1273→            current_ratio=current_ratio,
+  1274→            target_ratio=target_ratio,
+  1275→            pe_percentile=buy_pe_percentile,
+  1276→            premium_today=premium_today,
+  1277→            data_quality=dq,
+  1278→            rules=rules,
+  1279→            premium_7d_avg=premium_7d_avg,
+  1280→            premium_3d_avg=safe_num(md.get("premium_3d_avg")),
+  1281→        )
+  1282→        reduce_hits = _check_reduce_hits(
+  1283→            code=code,
+  1284→            current_ratio=current_ratio,
+  1285→            target_ratio=target_ratio,
+  1286→            pe_percentile=buy_pe_percentile,
+  1287→            premium_today=premium_today,
+  1288→            rules=rules,
+  1289→        )
+  1290→        boost_hits = _check_boost_hits(
+  1291→            code=code,
+  1292→            current_ratio=current_ratio,
+  1293→            target_ratio=target_ratio,
+  1294→            pe_percentile=buy_pe_percentile,
+  1295→            rules=rules,
+  1296→        )
+  1297→
+  1298→        # V4.2 策略书§5: 软风控4档检查
+  1299→        soft_level, soft_hits = _check_soft_wind_control(
+  1300→            code=code,
+  1301→            pe_percentile=buy_pe_percentile,
+  1302→            rules=rules,
+  1303→        )
+  1304→
+  1305→        # V4.1 S2-T5: 单源场景的 info 提示不应导致 vetoed=True
+  1306→        # 仅 ruleType="veto" 的 hits 才算真正的否决
+  1307→        vetoed = any(h.rule_type == "veto" for h in veto_hits)
+  1308→        over_allocated = (not vetoed) and base_gap_amount <= 0
+  1309→
+  1310→        per_item[code] = {
+  1311→            "name": h.name,
+  1312→            "current_value": current_value,
+  1313→            "target_ratio": target_ratio,
+  1314→            "current_ratio": current_ratio,
+  1315→            "target_value_after_budget": target_value_after_budget,
+  1316→            "gap_amount": gap_amount,
+  1317→            "base_gap_amount": base_gap_amount,
+  1318→            "pe_percentile": pe_percentile,
+  1319→            "pb_percentile": pb_percentile,
+  1320→            "premium_today": premium_today,
+  1321→            "premium_7d_avg": premium_7d_avg,
+  1322→            "dividend_yield": dividend_yield,
+  1323→            # V4 多周期分位
+  1324→            "pe_percentile_1y": safe_num(md.get("pe_percentile_1y")),
+  1325→            "pe_percentile_3y": safe_num(md.get("pe_percentile_3y")),
+  1326→            "pe_percentile_5y": safe_num(md.get("pe_percentile_5y")),
+  1327→            "pe_percentile_10y": safe_num(md.get("pe_percentile_10y")),
+  1328→            "pe_percentile_all": safe_num(md.get("pe_percentile_all")),
+  1329→            "pb_percentile_1y": safe_num(md.get("pb_percentile_1y")),
+  1330→            "pb_percentile_3y": safe_num(md.get("pb_percentile_3y")),
+  1331→            "pb_percentile_5y": safe_num(md.get("pb_percentile_5y")),
+  1332→            "pb_percentile_10y": safe_num(md.get("pb_percentile_10y")),
+  1333→            "pb_percentile_all": safe_num(md.get("pb_percentile_all")),
+  1334→            "data_quality": dq,
+  1335→            "veto_hits": veto_hits,
+  1336→            "reduce_hits": reduce_hits,
+  1337→            "boost_hits": boost_hits,
+  1338→            "soft_wind_control": soft_level,
+  1339→            "soft_hits": soft_hits,
+  1340→            "vetoed": vetoed,
+  1341→            "over_allocated": over_allocated,
+  1342→        }
+  1343→
+  1344→    # ──────────────────────────────────────────────
+  1345→    # V4.2 策略书§8.4: QDII挂起资金释放(溢价恢复正常时分8周释放)
+  1346→    # ──────────────────────────────────────────────
+  1347→    hard_vetoed_codes = {c for c, it in per_item.items() if it["vetoed"]}
+  1348→    qdii_release_amounts: dict[str, float] = {}
+  1349→    qdii_release_info: list[dict] = []
+  1350→    for c in QDII_CODES:
+  1351→        if c in hard_vetoed_codes:
+  1352→            continue  # 仍被硬否决, 不释放
+  1353→        pending_balance = qdii_pending_cash_sp500 if c == "513500" else qdii_pending_cash_nasdaq
+  1354→        if pending_balance <= 0:
+  1355→            continue
+  1356→        # V4.2 策略书§8.4: 单周释放上限 = min(余额/剩余周数, 正常周预算×2)
+  1357→        normal_weekly = weekly_budget * target_ratios.get(c, 0)
+  1358→        release_cap = normal_weekly * QDII_RELEASE_CAP_MULTIPLIER if normal_weekly > 0 else pending_balance
+  1359→        weekly_release = min(pending_balance / QDII_RELEASE_PLAN_WEEKS, release_cap)
+  1360→        if weekly_release > 0:
+  1361→            qdii_release_amounts[c] = weekly_release
+  1362→            qdii_release_info.append({
+  1363→                "code": c, "pending_balance": pending_balance,
+  1364→                "weekly_release": weekly_release,
+  1365→                "release_plan_weeks": QDII_RELEASE_PLAN_WEEKS,
+  1366→            })
+  1367→            logger.info(
+  1368→                f"[QDII-RELEASE] {c} 挂起池余额¥{pending_balance:.0f}, "
+  1369→                f"本周释放¥{weekly_release:.0f} (分{QDII_RELEASE_PLAN_WEEKS}周)"
+  1370→            )
+  1371→
+  1372→    # ──────────────────────────────────────────────
+  1373→    # V4.2 Step 6: 构建两个池子
+  1374→    # V4.2 策略书§5.2: pause_all(>95%)暂停新增(基础仓+增强仓都停)
+  1375→    # base_pool: gap>0 且 非硬否决 且 非pause_all (基础仓可投)
+  1376→    # value_pool: gap>0 且 非硬否决 且 非pause_all 且 非forbid_enhancement/minimal_base (增强仓可投)
+  1377→    # ──────────────────────────────────────────────
+  1378→    base_pool = [
+  1379→        c for c, it in per_item.items()
+  1380→        if it["base_gap_amount"] > 0 and not it["vetoed"]
+  1381→        and it["soft_wind_control"] != "pause_all"
+  1382→    ]
+  1383→    value_pool = [
+  1384→        c for c, it in per_item.items()
+  1385→        if it["base_gap_amount"] > 0 and not it["vetoed"]
+  1386→        and it["soft_wind_control"] not in ("pause_all", "forbid_enhancement", "minimal_base")
+  1387→    ]
+  1388→
+  1389→    # ──────────────────────────────────────────────
+  1390→    # V4.2 Step 7: 预算分桶 — 基础仓40% + 增强仓60%
+  1391→    # V4.2 策略书§8.2: QDII硬否决标的的预算配额先扣减, 进入挂起池, 不参与分配
+  1392→    # ──────────────────────────────────────────────
+  1393→    qdii_blocked_budget = 0.0
+  1394→    for c in QDII_CODES:
+  1395→        if c in hard_vetoed_codes:
+  1396→            qdii_blocked_budget += weekly_budget * target_ratios.get(c, 0)
+  1397→
+  1398→    distributable_budget = max(0.0, weekly_budget - qdii_blocked_budget)
+  1399→    base_budget = distributable_budget * BASE_BUCKET_RATIO
+  1400→    value_budget = distributable_budget * VALUE_BUCKET_RATIO
+  1401→
+  1402→    total_gap_base = sum(per_item[c]["base_gap_amount"] for c in base_pool)
+  1403→    total_gap_value = sum(per_item[c]["base_gap_amount"] for c in value_pool)
+  1404→
+  1405→    # 基础仓: 按缺口比例分配(只避硬否决, 不受软风控限制)
+  1406→    base_amounts: dict[str, float] = {}
+  1407→    if total_gap_base > 0:
+  1408→        for c in base_pool:
+  1409→            base_amounts[c] = base_budget * per_item[c]["base_gap_amount"] / total_gap_base
+  1410→    else:
+  1411→        for c in base_pool:
+  1412→            base_amounts[c] = 0.0
+  1413→
+  1414→    # 增强仓: 按缺口比例分配 + 软风控减量
+  1415→    value_amounts: dict[str, float] = {}
+  1416→    if total_gap_value > 0:
+  1417→        for c in value_pool:
+  1418→            value_amounts[c] = value_budget * per_item[c]["base_gap_amount"] / total_gap_value
+  1419→    else:
+  1420→        for c in value_pool:
+  1421→            value_amounts[c] = 0.0
+  1422→
+  1423→    # ──────────────────────────────────────────────
+  1424→    # V4.2 Step 8: 减量/加量只作用于增强仓; 基础仓不受影响
+  1425→    # 软风控级别影响增强仓:
+  1426→    #   reduce → 增强仓×0.5
+  1427→    #   forbid_enhancement → 增强仓=0
+  1428→    #   minimal_base → 增强仓=0
+  1429→    #   pause_all → 增强仓=0 (已在value_pool排除)
+  1430→    # ──────────────────────────────────────────────
+  1431→    pre_cap_amounts: dict[str, float] = {}
+  1432→    multipliers: dict[str, float] = {}
+  1433→    effective_hits: dict[str, list] = {}
+  1434→    bucket_types: dict[str, str] = {}
+  1435→
+  1436→    all_pool_codes = set(base_pool) | set(value_pool)
+  1437→    for c in all_pool_codes:
+  1438→        it = per_item[c]
+  1439→        reduce_hits = it["reduce_hits"]
+  1440→        boost_hits = it["boost_hits"]
+  1441→        soft_level = it["soft_wind_control"]
+  1442→        
+  1443→        base_amt = base_amounts.get(c, 0.0)
+  1444→        value_amt = value_amounts.get(c, 0.0)
+  1445→        
+  1446→        # 增强仓受软风控和reduce/boost影响
+  1447→        if soft_level in ("forbid_enhancement", "minimal_base", "pause_all"):
+  1448→            # 禁止增强仓
+  1449→            value_amt = 0.0
+  1450→            multiplier = 0.0
+  1451→            effective_hits[c] = list(it["soft_hits"])
+  1452→            if reduce_hits:
+  1453→                effective_hits[c] += reduce_hits
+  1454→                effective_hits[c].append(RuleHit(
+  1455→                    rule_type="info", rule_name="减量规则",
+  1456→                    condition_text="被软风控覆盖", actual_value="",
+  1457→                    threshold="", effect="未生效"))
+  1458→            if boost_hits:
+  1459→                effective_hits[c] += [RuleHit(
+  1460→                    rule_type="info", rule_name=bh.rule_name,
+  1461→                    condition_text=bh.condition_text + "（被软风控压制）",
+  1462→                    actual_value=bh.actual_value, threshold=bh.threshold,
+  1463→                    effect="未生效") for bh in boost_hits]
+  1464→        elif reduce_hits:
+  1465→            multiplier = 0.5
+  1466→            value_amt = value_amt * multiplier
+  1467→            effective_hits[c] = reduce_hits
+  1468→            if boost_hits:
+  1469→                effective_hits[c] += [RuleHit(
+  1470→                    rule_type="info", rule_name=bh.rule_name,
+  1471→                    condition_text=bh.condition_text + "（被减量压制）",
+  1472→                    actual_value=bh.actual_value, threshold=bh.threshold,
+  1473→                    effect="未生效") for bh in boost_hits]
+  1474→        elif boost_hits:
+  1475→            multiplier = 2.0
+  1476→            value_amt = value_amt * multiplier
+  1477→            effective_hits[c] = boost_hits
+  1478→        else:
+  1479→            multiplier = 1.0
+  1480→            effective_hits[c] = []
+  1481→        
+  1482→        # 软风控 info hits 也加入
+  1483→        for sh in it["soft_hits"]:
+  1484→            if sh not in effective_hits[c]:
+  1485→                effective_hits[c].append(sh)
+  1486→        
+  1487→        multipliers[c] = multiplier
+  1488→        pre_cap_amounts[c] = base_amt + value_amt
+  1489→        # V4.2 §8.4: QDII挂起池释放资金加入本周可执行金额
+  1490→        if c in qdii_release_amounts:
+  1491→            pre_cap_amounts[c] += qdii_release_amounts[c]
+  1492→            # 记录释放 info hit
+  1493→            if effective_hits.get(c) is None:
+  1494→                effective_hits[c] = []
+  1495→            effective_hits[c].append(RuleHit(
+  1496→                ruleType="info",
+  1497→                ruleName="QDII挂起池释放",
+  1498→                conditionText=f"溢价恢复正常, 挂起池释放¥{qdii_release_amounts[c]:.0f}(分{QDII_RELEASE_PLAN_WEEKS}周)",
+  1499→                actualValue=f"¥{qdii_release_amounts[c]:.0f}",
+  1500→                threshold=f"{QDII_RELEASE_PLAN_WEEKS}周",
+  1501→                effect="增加本周买入金额",
+  1502→            ))
+  1503→        # 标记桶类型
+  1504→        if base_amt > 0 and value_amt > 0:
+  1505→            bucket_types[c] = "base+value"
+  1506→        elif base_amt > 0:
+  1507→            bucket_types[c] = "base_bucket"
+  1508→        elif value_amt > 0:
+  1509→            bucket_types[c] = "value_bucket"
+  1510→        else:
+  1511→            bucket_types[c] = "none"
+  1512→
+  1513→    # ──────────────────────────────────────────────
+  1514→    # V4.2 Step 6.5: 全体否决兜底机制(策略书§10)
+  1515→    # ──────────────────────────────────────────────
+  1516→    fallback_triggered = False
+  1517→    fallback_reason = ""
+  1518→    if not base_pool and not value_pool:
+  1519→        # 所有标的全否决, 判断原因
+  1520→        all_data_veto = all(
+  1521→            any("数据质量" in h.rule_name for h in it["veto_hits"])
+  1522→            for it in per_item.values() if it.get("vetoed")
+  1523→        )
+  1524→        if all_data_veto:
+  1525→            fallback_triggered = True
+  1526→            fallback_reason = "全部因数据异常, 不生成自动建议, 要求人工确认"
+  1527→        else:
+  1528→            # 检查是否全部因硬否决(非数据)
+  1529→            all_hard_veto = all(it["vetoed"] for it in per_item.values())
+  1530→            if all_hard_veto:
+  1531→                fallback_triggered = True
+  1532→                fallback_reason = "全部因硬否决, 预算进入华宝添益对应子账户"
+  1533→            else:
+  1534→                # 软风控场景: 启动基础定投仓投向最欠配+无硬否决标的
+  1535→                fallback_triggered = True
+  1536→                # 找最欠配(当前占比/目标占比 最低)且无硬否决且非pause_all的标的
+  1537→                candidates = [
+  1538→                    (c, it) for c, it in per_item.items()
+  1539→                    if not it["vetoed"] and it["soft_wind_control"] != "pause_all"
+  1540→                    and it["base_gap_amount"] > 0
+  1541→                ]
+  1542→                if candidates:
+  1543→                    fallback_reason = "全部因软风控, 启动基础定投仓投向最欠配标的"
+  1544→                    # 按欠配程度排序(当前占比/目标占比, 越小越欠配)
+  1545→                    candidates.sort(key=lambda x: x[1]["current_ratio"] / max(x[1]["target_ratio"], 0.01))
+  1546→                    best_code, best_it = candidates[0]
+  1547→                    base_amounts[best_code] = base_budget
+  1548→                    pre_cap_amounts[best_code] = base_budget
+  1549→                    bucket_types[best_code] = "base_bucket"
+  1550→                    multipliers[best_code] = 1.0
+  1551→                    effective_hits[best_code] = [RuleHit(
+  1552→                        rule_type="info", rule_name="基础定投仓兜底",
+  1553→                        condition_text=f"全否决兜底: 投向最欠配标的 {best_code}",
+  1554→                        actual_value=best_code, threshold="",
+  1555→                        effect=f"基础仓¥{base_budget:.0f}")]
+  1556→                    logger.info(f"[FALLBACK] 全否决兜底, 基础仓投向 {best_code}")
+  1557→                else:
+  1558→                    fallback_reason = "全部标的因软风控pause_all或硬否决无法买入, 预算进入weekly_unallocated_cash"
+  1559→                    logger.info(f"[FALLBACK] 无可投候选, 预算进入未分配现金")
+  1560→
+  1561→    # ──────────────────────────────────────────────
+  1562→    # Step 9: Gap cap — never buy more than the gap
+  1563→    # ──────────────────────────────────────────────
+  1564→    for c in all_pool_codes:
+  1565→        cap = per_item[c]["base_gap_amount"]
+  1566→        if pre_cap_amounts[c] > cap:
+  1567→            pre_cap_amounts[c] = cap
+  1568→
+  1569→    # ──────────────────────────────────────────────
+  1570→    # Step 10: Total budget constraint
+  1571→    # ──────────────────────────────────────────────
+  1572→    total_pre_cap = sum(pre_cap_amounts.values())
+  1573→    if total_pre_cap > weekly_budget and total_pre_cap > 0:
+  1574→        scale = weekly_budget / total_pre_cap
+  1575→        for c in all_pool_codes:
+  1576→            pre_cap_amounts[c] = pre_cap_amounts[c] * scale
+  1577→        logger.info(
+  1578→            f"[BUDGET] Total pre-cap {total_pre_cap:.0f} > budget {weekly_budget:.0f}, "
+  1579→            f"scaling by {scale:.4f}"
+  1580→        )
+  1581→
+  1582→    # ──────────────────────────────────────────────
+  1583→    # Step 11: Round to integers, fix rounding diff on largest item
+  1584→    # ──────────────────────────────────────────────
+  1585→    rounded_amounts: dict[str, int] = {c: int(round(v)) for c, v in pre_cap_amounts.items()}
+  1586→
+  1587→    total_rounded = sum(rounded_amounts.values())
+  1588→    diff = int(round(weekly_budget)) - total_rounded
+  1589→    if diff != 0 and rounded_amounts:
+  1590→        largest_code = max(rounded_amounts, key=rounded_amounts.get)
+  1591→        # Only adjust if the largest item would not become negative
+  1592→        if rounded_amounts[largest_code] + diff >= 0:
+  1593→            rounded_amounts[largest_code] += diff
+  1594→            logger.info(f"[ROUNDING] Adjusted {largest_code} by {diff} to fix rounding difference")
+  1595→
+  1596→    # ──────────────────────────────────────────────
+  1597→    # Step 12: Build response with full audit fields
+  1598→    # ──────────────────────────────────────────────
+  1599→    suggestions: list[SuggestionItem] = []
+  1600→
+  1601→    for h in holdings:
+  1602→        code = h.code
+  1603→        md = market_data.get(code, {}) or {}
+  1604→
+  1605→        if code not in investable_codes:
+  1606→            # Non-investable: include with amount=0, vetoed=True, multiplier=0
+  1607→            # Reason: blacklist / 非定投标的
+  1608→            req_ratio = safe_num(h.current_ratio)
+  1609→            current_ratio = req_ratio if (req_ratio is not None and 0 <= req_ratio <= 1.0) else 0.0
+  1610→            info_hit = RuleHit(
+  1611→                ruleType="veto",
+  1612→                ruleName="非定投标的",
+  1613→                conditionText="该ETF不在投资目标池中（如现金管理或家庭配置品种）",
+  1614→                actualValue=code,
+  1615→                threshold="",
+  1616→                effect="本周不买入",
+  1617→            )
+  1618→            suggestions.append(SuggestionItem(
+  1619→                code=code,
+  1620→                name=h.name,
+  1621→                amount=0,
+  1622→                targetRatio=0.0,
+  1623→                currentRatio=current_ratio,
+  1624→                deviation=0.0,
+  1625→                pePercentile=None,
+  1626→                pbPercentile=None,
+  1627→                premiumToday=None,
+  1628→                premium7dAvg=None,
+  1629→                dividendYield=None,
+  1630→                currentValue=float(h.market_value),
+  1631→                targetValueAfterBudget=0.0,
+  1632→                gapAmount=0.0,
+  1633→                baseGapAmount=0.0,
+  1634→                dataQuality=None,
+  1635→                preCapAmount=0.0,
+  1636→                reasonSummary="非定投标的（现金管理或家庭配置），本周不买入。",
+  1637→                rulesHit=[info_hit],
+  1638→                multiplier=0.0,
+  1639→                vetoed=True,
+  1640→                bucketType="none",
+  1641→                softWindControl="none",
+  1642→            ))
+  1643→            continue
+  1644→
+  1645→        it = per_item[code]
+  1646→        veto_hits = it["veto_hits"]
+  1647→        reduce_hits = it["reduce_hits"]
+  1648→        boost_hits = it["boost_hits"]
+  1649→        vetoed = it["vetoed"]
+  1650→        over_allocated = it["over_allocated"]
+  1651→
+  1652→        # Determine the final amount, multiplier, effective hits, reason_summary
+  1653→        if vetoed:
+  1654→            amount = 0
+  1655→            multiplier = 0.0
+  1656→            eff_hits = list(veto_hits)
+  1657→            # If reduce/boost also hit, log them as info (not effective)
+  1658→            for rh in reduce_hits + boost_hits:
+  1659→                eff_hits.append(RuleHit(
+  1660→                    rule_type="info",
+  1661→                    rule_name=rh.rule_name,
+  1662→                    condition_text=rh.condition_text + "（被否决规则覆盖，未生效）",
+  1663→                    actual_value=rh.actual_value,
+  1664→                    threshold=rh.threshold,
+  1665→                    effect="未生效",
+  1666→                ))
+  1667→            base_gap_amount = it["base_gap_amount"]
+  1668→            pre_cap_amount = 0.0
+  1669→            reason_summary = _build_reason_summary(
+  1670→                vetoed=True,
+  1671→                veto_hits=veto_hits,
+  1672→                reduce_hits=reduce_hits,
+  1673→                boost_hits=boost_hits,
+  1674→                over_allocated=False,
+  1675→                current_ratio=it["current_ratio"],
+  1676→                target_ratio=it["target_ratio"],
+  1677→                pe_percentile=it["pe_percentile"],
+  1678→                premium_today=it["premium_today"],
+  1679→            )
+  1680→        elif over_allocated:
+  1681→            # base_gap_amount == 0 (or <= 0) → excluded from pool
+  1682→            amount = 0
+  1683→            multiplier = 0.0
+  1684→            eff_hits = list(reduce_hits) + list(boost_hits)
+  1685→            # Add info hit for over-allocation
+  1686→            eff_hits.insert(0, RuleHit(
+  1687→                ruleType="info",
+  1688→                ruleName="已超配",
+  1689→                conditionText="当前占比高于目标占比，目标缺口≤0",
+  1690→                actualValue=f"当前{it['current_ratio']*100:.1f}% / 目标{it['target_ratio']*100:.0f}%",
+  1691→                threshold="目标占比",
+  1692→                effect="本周不补仓",
+  1693→            ))
+  1694→            base_gap_amount = it["base_gap_amount"]
+  1695→            pre_cap_amount = 0.0
+  1696→            reason_summary = _build_reason_summary(
+  1697→                vetoed=False,
+  1698→                veto_hits=[],
+  1699→                reduce_hits=reduce_hits,
+  1700→                boost_hits=boost_hits,
+  1701→                over_allocated=True,
+  1702→                current_ratio=it["current_ratio"],
+  1703→                target_ratio=it["target_ratio"],
+  1704→                pe_percentile=it["pe_percentile"],
+  1705→                premium_today=it["premium_today"],
+  1706→            )
+  1707→        else:
+  1708→            amount = int(rounded_amounts.get(code, 0))
+  1709→            multiplier = multipliers.get(code, 1.0)
+  1710→            eff_hits = list(effective_hits.get(code, []))  # copy
+  1711→            # V4.1 §10.9 / S2-T5: 把单源场景 info 提示保留到最终 rules_hit
+  1712→            # （否则会被 effective_hits 过滤掉，前端无法看到该 ETF 处于单源场景）
+  1713→            for vh in veto_hits:
+  1714→                if vh.rule_type == "info":
+  1715→                    eff_hits.append(vh)
+  1716→            base_gap_amount = it["base_gap_amount"]
+  1717→            pre_cap_amount = float(pre_cap_amounts.get(code, 0.0))
+  1718→            reason_summary = _build_reason_summary(
+  1719→                vetoed=False,
+  1720→                veto_hits=[],
+  1721→                reduce_hits=reduce_hits,
+  1722→                boost_hits=boost_hits,
+  1723→                over_allocated=False,
+  1724→                current_ratio=it["current_ratio"],
+  1725→                target_ratio=it["target_ratio"],
+  1726→                pe_percentile=it["pe_percentile"],
+  1727→                premium_today=it["premium_today"],
+  1728→            )
+  1729→
+  1730→        suggestions.append(SuggestionItem(
+  1731→            code=code,
+  1732→            name=h.name,
+  1733→            amount=amount,
+  1734→            targetRatio=it["target_ratio"],
+  1735→            currentRatio=it["current_ratio"],
+  1736→            deviation=round(it["current_ratio"] - it["target_ratio"], 4),
+  1737→            pePercentile=it["pe_percentile"],
+  1738→            pbPercentile=it["pb_percentile"],
+  1739→            premiumToday=it["premium_today"],
+  1740→            premium7dAvg=it["premium_7d_avg"],
+  1741→            dividendYield=it["dividend_yield"],
+  1742→            # V4 多周期分位
+  1743→            pePercentile1y=it.get("pe_percentile_1y"),
+  1744→            pePercentile3y=it.get("pe_percentile_3y"),
+  1745→            pePercentile5y=it.get("pe_percentile_5y"),
+  1746→            pePercentile10y=it.get("pe_percentile_10y"),
+  1747→            pePercentileAll=it.get("pe_percentile_all"),
+  1748→            pbPercentile1y=it.get("pb_percentile_1y"),
+  1749→            pbPercentile3y=it.get("pb_percentile_3y"),
+  1750→            pbPercentile5y=it.get("pb_percentile_5y"),
+  1751→            pbPercentile10y=it.get("pb_percentile_10y"),
+  1752→            pbPercentileAll=it.get("pb_percentile_all"),
+  1753→            currentValue=it["current_value"],
+  1754→            targetValueAfterBudget=it["target_value_after_budget"],
+  1755→            gapAmount=it["gap_amount"],
+  1756→            baseGapAmount=base_gap_amount,
+  1757→            dataQuality=it["data_quality"],
+  1758→            preCapAmount=pre_cap_amount,
+  1759→            reasonSummary=reason_summary,
+  1760→            rulesHit=eff_hits,
+  1761→            multiplier=multiplier,
+  1762→            vetoed=vetoed,
+  1763→            # V4.2 策略书§4/§5: 桶类型 + 软风控级别
+  1764→            # vetoed 和 over_allocated 的 bucket_type 应为 "none" (它们不在 base_pool/value_pool 中, 默认 "none")
+  1765→            bucketType=bucket_types.get(code, "none"),
+  1766→            softWindControl=per_item.get(code, {}).get("soft_wind_control", "none") if code in investable_codes else "none",
+  1767→        ))
+  1768→
+  1769→    total_allocated = sum(s.amount for s in suggestions)
+  1770→    # V4.2 策略书§8.2: 未分配 = 可分配预算 - 已分配(QDII挂起已从可分配预算扣减)
+  1771→    total_unallocated = int(round(distributable_budget)) - total_allocated
+  1772→    if total_unallocated < 0:
+  1773→        # Shouldn't happen, but safety guard
+  1774→        total_unallocated = 0
+  1775→
+  1776→    # ──────────────────────────────────────────────
+  1777→    # V4 Step 13: Rebalance Engine (§7) — 估值极端+超配双条件触发卖出
+  1778→    # ──────────────────────────────────────────────
+  1779→    rebalance_suggestions = run_rebalance_engine(
+  1780→        holdings=holdings,
+  1781→        target_ratios=target_ratios,
+  1782→        market_data=market_data,
+  1783→        invested_total=invested_asset_value,
+  1784→    )
+  1785→    total_rebalanced = sum(r.sell_amount for r in rebalance_suggestions)
+  1786→
+  1787→    # ──────────────────────────────────────────────
+  1788→    # V4.2 Step 14: Cash Pool Engine — 现金子账户路由(策略书§3.1)
+  1789→    # ──────────────────────────────────────────────
+  1790→    cash_pool_suggestions: list[CashPoolSuggestion] = []
+  1791→    cash_movements: list[CashLedgerEntry] = []
+  1792→    
+  1793→    # 未分配预算 → weekly_unallocated_cash (计入权益基准)
+  1794→    if total_unallocated > 0:
+  1795→        cash_pool_suggestions.append(CashPoolSuggestion(
+  1796→            code=CASH_POOL_CODE, name="华宝添益ETF",
+  1797→            inflowType="unallocated",
+  1798→            inflowAmount=total_unallocated,
+  1799→            description=f"本周未分配新增预算¥{total_unallocated:,}转入华宝添益(weekly_unallocated_cash)。",
+  1800→            subaccountType="weekly_unallocated_cash",
+  1801→            countsAsEquityBase=True,
+  1802→        ))
+  1803→        cash_movements.append(CashLedgerEntry(
+  1804→            cashAccountType="weekly_unallocated_cash",
+  1805→            sourceEvent="weekly_unallocated",
+  1806→            amount=total_unallocated,
+  1807→            createdAt=datetime.now().isoformat(),
+  1808→            status="active",
+  1809→        ))
+  1810→    
+  1811→    # 再平衡释放 → rebalance_equity_reserve (计入权益基准)
+  1812→    if total_rebalanced > 0:
+  1813→        cash_pool_suggestions.append(CashPoolSuggestion(
+  1814→            code=CASH_POOL_CODE, name="华宝添益ETF",
+  1815→            inflowType="rebalance_release",
+  1816→            inflowAmount=total_rebalanced,
+  1817→            description=f"本周再平衡释放资金¥{total_rebalanced:,}转入华宝添益(rebalance_equity_reserve)。",
+  1818→            subaccountType="rebalance_equity_reserve",
+  1819→            countsAsEquityBase=True,
+  1820→        ))
+  1821→        cash_movements.append(CashLedgerEntry(
+  1822→            cashAccountType="rebalance_equity_reserve",
+  1823→            sourceEvent="rebalance_release",
+  1824→            amount=total_rebalanced,
+  1825→            createdAt=datetime.now().isoformat(),
+  1826→            status="active",
+  1827→        ))
+  1828→    
+  1829→    # V4.2 策略书§8.2: QDII硬否决阻断的预算 → qdii_pending_cash 子账户
+  1830→    for c in hard_vetoed_codes:
+  1831→        if c in QDII_CODES:
+  1832→            # QDII被硬否决, 预算进入挂起池
+  1833→            qdii_subaccount = "qdii_pending_cash_sp500" if c == "513500" else "qdii_pending_cash_nasdaq"
+  1834→            qdii_blocked_amount = int(round(weekly_budget * target_ratios.get(c, 0)))
+  1835→            if qdii_blocked_amount > 0:
+  1836→                cash_pool_suggestions.append(CashPoolSuggestion(
+  1837→                    code=CASH_POOL_CODE, name="华宝添益ETF",
+  1838→                    inflowType="qdii_blocked",
+  1839→                    inflowAmount=qdii_blocked_amount,
+  1840→                    description=f"{c}因QDII溢价硬否决, 预算¥{qdii_blocked_amount:,}进入{qdii_subaccount}。",
+  1841→                    subaccountType=qdii_subaccount,
+  1842→                    countsAsEquityBase=True,
+  1843→                ))
+  1844→                cash_movements.append(CashLedgerEntry(
+  1845→                    cashAccountType=qdii_subaccount,
+  1846→                    sourceEvent="qdii_blocked",
+  1847→                    sourceEtf=c,
+  1848→                    amount=qdii_blocked_amount,
+  1849→                    createdAt=datetime.now().isoformat(),
+  1850→                    status="active",
+  1851→                ))
+  1852→
+  1853→    # V4.2 策略书§8.5: QDII连续4周阻断提示场外基金
+  1854→    qdii_consecutive_warnings: list[str] = []
+  1855→    try:
+  1856→        import sqlite3 as _sqlite3
+  1857→        from config import DB_PATH as _DB_PATH, QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD
+  1858→        _conn = _sqlite3.connect(_DB_PATH)
+  1859→        _conn.row_factory = _sqlite3.Row
+  1860→        for c in QDII_CODES:
+  1861→            if c in hard_vetoed_codes:
+  1862→                qdii_sub = "qdii_pending_cash_sp500" if c == "513500" else "qdii_pending_cash_nasdaq"
+  1863→                rows = _conn.execute(
+  1864→                    "SELECT created_at FROM cash_ledger WHERE cash_account_type=? AND source_event='qdii_blocked' AND source_etf=? ORDER BY created_at DESC LIMIT ?",
+  1865→                    (qdii_sub, c, QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD),
+  1866→                ).fetchall()
+  1867→                if len(rows) >= QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD:
+  1868→                    qdii_consecutive_warnings.append(
+  1869→                        f"{c}连续{QDII_CONSECUTIVE_BLOCK_WEEKS_THRESHOLD}周因QDII溢价被阻断, 建议人工评估是否使用场外联接基金/场外QDII方式承接对应额度。"
+  1870→                    )
+  1871→        _conn.close()
+  1872→    except Exception as _e:
+  1873→        logger.warning(f"[QDII-WARN] consecutive block check failed: {_e}")
+  1874→
+  1875→    # V4.2 策略书§8: 现金拖累提示
+  1876→    cash_drag_warning = ""
+  1877→    try:
+  1878→        total_assets = invested_asset_value + rebalance_equity_reserve + weekly_unallocated_cash + qdii_pending_cash_sp500 + qdii_pending_cash_nasdaq
+  1879→        # 加上华宝添益daily_cash和黄金(从holdings里找)
+  1880→        for h in holdings:
+  1881→            if h.code in ("511990", "518880"):
+  1882→                total_assets += float(h.market_value)
+  1883→        if total_assets > 0:
+  1884→            cash_pool_total = 0.0
+  1885→            for h in holdings:
+  1886→                if h.code == "511990":
+  1887→                    cash_pool_total += float(h.market_value)
+  1888→            cash_pool_total += rebalance_equity_reserve + weekly_unallocated_cash + qdii_pending_cash_sp500 + qdii_pending_cash_nasdaq
+  1889→            cash_ratio = cash_pool_total / total_assets
+  1890→            if cash_ratio > 0.30:
+  1891→                cash_drag_warning = f"现金水池占总资产{cash_ratio*100:.0f}%(>30%), 提醒可能存在长期现金拖累, 建议复核阈值或手动动用现金水池。"
+  1892→            elif cash_ratio > 0.20:
+  1893→                cash_drag_warning = f"现金水池占总资产{cash_ratio*100:.0f}%(>20%), 提醒现金占比偏高, 建议复核阈值。"
+  1894→    except Exception as _e:
+  1895→        logger.warning(f"[CASH-DRAG] calc failed: {_e}")
+  1896→
+  1897→    # V4.2 策略书§8.4: QDII挂起池释放(溢价恢复正常时分批释放)
+  1898→    for info in qdii_release_info:
+  1899→        c = info["code"]
+  1900→        qdii_subaccount = "qdii_pending_cash_sp500" if c == "513500" else "qdii_pending_cash_nasdaq"
+  1901→        release_amt = int(round(info["weekly_release"]))
+  1902→        if release_amt > 0:
+  1903→            cash_movements.append(CashLedgerEntry(
+  1904→                cashAccountType=qdii_subaccount,
+  1905→                sourceEvent="qdii_release",
+  1906→                sourceEtf=c,
+  1907→                amount=release_amt,
+  1908→                createdAt=datetime.now().isoformat(),
+  1909→                releasedAt=datetime.now().isoformat(),
+  1910→                status="released",
+  1911→            ))
+  1912→
+  1913→    cash_pool_inflow = total_unallocated + total_rebalanced
+  1914→
+  1915→    # Find the latest updated_at in market_data for the snapshot
+  1916→    latest_updated = ""
+  1917→    for md in market_data.values():
+  1918→        if not isinstance(md, dict):
+  1919→            continue
+  1920→        u = md.get("updated_at") or md.get("date") or ""
+  1921→        if u and str(u) > latest_updated:
+  1922→            latest_updated = str(u)
+  1923→
+  1924→    # ──────────────────────────────────────────────
+  1925→    # V4 迭代13: PRD§11.3 分类清单 + 汇总字段
+  1926→    # ──────────────────────────────────────────────
+  1927→    buy_suggestions = [s for s in suggestions if s.amount > 0]
+  1928→    pause_suggestions = [s for s in suggestions if s.amount == 0]
+  1929→
+  1930→    # data_quality_summary: 各标的数据质量状态汇总
+  1931→    dq_summary = {}
+  1932→    for s in suggestions:
+  1933→        if s.data_quality:
+  1934→            dq_summary[s.code] = {
+  1935→                "qualityStatus": s.data_quality.quality_status,
+  1936→                "qualityScore": s.data_quality.quality_score,
+  1937→                "canUseForRule": s.data_quality.can_use_for_rule,
+  1938→                "canUseForStrongRule": s.data_quality.can_use_for_strong_rule,
+  1939→                "isStale": s.data_quality.is_stale,
+  1940→                "staleLevel": s.data_quality.stale_level,
+  1941→                "canCalculate": s.data_quality.can_calculate,
+  1942→                "sampleDays": s.data_quality.sample_days,
+  1943→                # V4.1 S2-T5/S2-T8: 单源场景 + 主备源冲突
+  1944→                "singleSourceWarning": s.data_quality.single_source_warning,
+  1945→                "sourceConflict": s.data_quality.source_conflict,
+  1946→            }
+  1947→
+  1948→    # rules_hit_summary: 按规则类型计数
+  1949→    rh_summary = {"veto": 0, "reduce": 0, "boost": 0, "rebalance": 0, "info": 0}
+  1950→    for s in suggestions:
+  1951→        for rh in s.rules_hit:
+  1952→            rt = rh.rule_type if hasattr(rh, "rule_type") else "info"
+  1953→            rh_summary[rt] = rh_summary.get(rt, 0) + 1
+  1954→    for r in rebalance_suggestions:
+  1955→        for rh in r.rules_hit:
+  1956→            rt = rh.rule_type if hasattr(rh, "rule_type") else "info"
+  1957→            rh_summary[rt] = rh_summary.get(rt, 0) + 1
+  1958→
+  1959→    return CalculateResponse(
+  1960→        calculationId=f"calc-{uuid.uuid4().hex[:12]}",
+  1961→        engineVersion="target-gap-rebalance-v5.0",
+  1962→        strategyVersion="strategy-v5.0",
+  1963→        calculatedAt=datetime.now().isoformat(),
+  1964→        allocationStrategy="conservative",
+  1965→        dataSnapshot={
+  1966→            "marketDataCacheTime": latest_updated or datetime.now().isoformat(),
+  1967→            "rulesConfigVersion": "rules-v5.0",
+  1968→            "strategyVersion": "strategy-v5.0",
+  1969→            # V5.0 Sprint1 E1: 输入快照哈希(确定性复算验证)
+  1970→            # 相同 holdings + target_ratios + weekly_budget + rules_count → 相同 inputsHash
+  1971→            "inputsHash": inputs_hash,
+  1972→            "investedAssetValue": round(invested_asset_value, 2),
+  1973→            "equityAllocationBase": round(equity_allocation_base, 2),
+  1974→            "afterBudgetTotal": round(after_budget_total, 2),
+  1975→            "totalGap": round(total_gap_value, 2) if total_gap_value > 0 else 0.0,
+  1976→            "baseBudget": round(base_budget, 2),
+  1977→            "valueBudget": round(value_budget, 2),
+  1978→            # V4.2 P3-D/P3-E: 风险提示
+  1979→            "qdiiConsecutiveWarnings": qdii_consecutive_warnings,
+  1980→            "cashDragWarning": cash_drag_warning,
+  1981→        },
+  1982→        totalBudget=int(round(weekly_budget)),
+  1983→        totalAllocated=total_allocated,
+  1984→        totalUnallocated=total_unallocated,
+  1985→        suggestions=suggestions,
+  1986→        # V4 新增字段
+  1987→        rebalanceSuggestions=rebalance_suggestions,
+  1988→        cashPoolSuggestions=cash_pool_suggestions,
+  1989→        totalRebalanced=total_rebalanced,
+  1990→        totalRebalanceAmount=total_rebalanced,
+  1991→        cashPoolInflow=cash_pool_inflow,
+  1992→        cashDestination=CASH_POOL_CODE,
+  1993→        externalInflow=int(round(weekly_budget)),
+  1994→        internalRelease=total_rebalanced,
+  1995→        # PRD§11.3 分类清单 + 汇总
+  1996→        buySuggestions=[s.model_dump(by_alias=True) for s in buy_suggestions],
+  1997→        pauseSuggestions=[s.model_dump(by_alias=True) for s in pause_suggestions],
+  1998→        dataQualitySummary=dq_summary,
+  1999→        rulesHitSummary=rh_summary,
+  2000→        # V4.2 动态资金流修正字段
+
+[showing lines 1-2000 of 2012; use offset=2001 with limit to continue reading]
