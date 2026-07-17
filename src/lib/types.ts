@@ -333,10 +333,10 @@ export function fenToYuan(fen: number | null | undefined): number | null {
   return fen / 100;
 }
 
-/** Convert bps (万分之) to percentage */
+/** Convert bps (万分之) to percentage (e.g. 2000 bps → 20.00) */
 export function bpsToPercent(bps: number | null | undefined): number | null {
   if (bps == null) return null;
-  return bps / 10000;
+  return bps / 100;
 }
 
 /** Convert shares×10000 to actual shares */

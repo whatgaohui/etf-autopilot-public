@@ -4,6 +4,90 @@
 
 ---
 
+## 六、开发进展记录
+
+### 2026-07-17 Sprint 0/1 开发进展
+
+#### 项目当前状态描述/判断
+my-project 已从空脚手架发展为功能完整的 V5 前端应用。三个工作区（总览/趋势/设置）全部实现，15 个 API 路由全部 200 正常，数据库 15 张表已建并填充种子数据。
+
+#### 当前目标 / 已完成的修改
+
+**Sprint 0 基线搭建 (已完成):**
+- Prisma schema: 15 张表 (EtfConfig, HoldingSnapshot, StrategyVersion, CalculationSnapshot, CashSubaccount, CashLedger, ReleasePlan, ExecutionOrder, ExecutionFill, ManualOverride, CalculationLog, RuleConfig, SystemConfig, DataSource, DataQualityLog)
+- 种子数据: 6 只 ETF 配置 + 持仓 + 7 个现金子账户 + 11 条规则 + 12 个系统配置 + 4 个数据源 + 3 条计算日志 + 6 个执行单 + 2 个成交回填 + 10 条现金流水 + 2 个释放计划 + 8 条数据质量记录
+- 所有金额使用整数分 (fen) 避免浮点问题
+
+**API 层 (15 个路由):**
+- /api/etf-configs, /api/strategy-versions, /api/strategy-versions/activate
+- /api/cash-accounts, /api/cash-ledger, /api/execution-orders, /api/execution-fills
+- /api/calculation-logs, /api/calculation-logs/[id], /api/data-quality
+- /api/release-plans, /api/dashboard, /api/rule-configs, /api/system-configs
+
+**总览页 (7 个卡片):**
+- 本周工作流进度条 (8 步骤: 更新持仓→校准→确认注资→数据门禁→生成建议→确认→回填→复盘)
+- 数据门禁摘要 (五态分布 + 逐 ETF 质量状态 + 阻断 Alert)
+- 持仓概览 (6 ETF 表格 + 偏离着色) + 现金子账户 (7 个账户 + EAB 标记)
+- 本周资金调拨执行单 (EAB/预算/分配 + 6 个 ETF 执行订单 + 确认/拒绝)
+- 风控审计 (阻断/拒绝项 Alert)
+- 现金流水 (最近 10 条资金流动)
+- 释放计划 (QDII 挂起释放 + 进度条 + 暂停原因)
+
+**趋势页 (6 个板块):**
+- ETF 选择器 (6 个 ETF 药丸按钮, emerald 高亮, 激活指示器)
+- 当前 ETF 信息横幅 (代码/名称/目标比例/市值/快照日期)
+- 30 日价格走势图 (Recharts AreaChart, 渐变填充, 涨跌着色)
+- 估值百分位 (PE/PB 卡片 + 多时间窗口柱状图 + 颜色编码)
+- QDII 溢价区段 (仅 QDII ETF 显示)
+- 红利股息区段 (仅红利 ETF 显示)
+- 数据质量五维评分 (新鲜度/一致性/完整性/异常/源健康 水平条)
+- 技术指标占位 (E6 Sprint 3, 0% 进度)
+- 实时数据质量日志 (按 ETF 筛选)
+- 数据溯源 (东方财富/天天基金/新浪财经, 质量分, 采集频率)
+
+**设置页 (7 个 Accordion):**
+- 策略版本管理 (活跃版本展示 + 目标配比条形图 + 版本列表 + 创建/激活)
+- ETF 核心配置 (表格 + 添加/编辑/删除 + 类别 Badge + 比例总和校验)
+- 周预算与默认值 (本周注资/策略周预算/基础仓比例/增强仓比例 + EAB 预览)
+- 规则参数 (按组折叠: 买入/暂停/再平衡/数据质量, 内联编辑)
+- 现金账户管理 (7 账户网格 + 余额 + EAB 标记 + 手动转账 Dialog)
+- 数据源管理 (5 个模拟数据源 + 状态/质量分)
+- 系统配置 (K-V 列表 + 内联编辑)
+
+#### 验证结果
+- ✅ Lint 通过 (0 errors)
+- ✅ 所有 API 路由 200
+- ✅ agent-browser QA:
+  - 总览页: 7 个卡片全部渲染, 持仓比例 20%/18%/12%/10%/25%/15% 正确
+  - 趋势页: 6 个 ETF 正确加载, 图表渲染, 质量评分显示, ETF 选择器切换
+  - 设置页: 目标配比 25%/20%/18%/12%/15%/10% 正确显示, 总和 100%, 系统配置 ¥7,000 周预算
+- ✅ 响应式: 桌面侧边栏 + 移动端水平导航
+- ✅ 主题切换: 明/暗模式
+
+#### Bug 修复记录
+1. **bpsToPercent 转换错误**: `bps/10000` → `bps/100` (2000 bps → 20.00 而非 0.20%)
+2. **Settings 策略版本 target_ratios 格式**: 值为小数 (0.2=20%) 而非 bps, 修复 `ratio * 100`
+3. **Settings 系统配置 key 不匹配**: `strategy_weekly_budget` → `weekly_budget`, `weekly_contribution_committed` 改为从现金账户读取
+4. **Trends Tooltip 重复导入**: Recharts Tooltip 与 shadcn/ui Tooltip 命名冲突, 使用 `as RechartsTooltip` / `as ShadcnTooltip` 解决
+5. **Trends ETF 选择器**: 从硬编码 6 个 ETF 改为从 API 动态获取, CATEGORY_COLORS 增加 `domestic`/`dividend` 映射
+
+#### 未解决问题或风险
+
+1. **趋势页数据全部为模拟数据** — 价格/估值/溢价/质量评分均为 seeded random, 无真实数据源
+2. **设置页 ETF 表格显示 "暂无"** — API 返回数据但 React Query 可能因 forceMount Tabs 导致缓存问题, 需进一步排查
+3. **数据质量 API 按 etfCode 筛选时只返回 1 条** — 应返回该 ETF 所有 metric 的最新记录
+4. **总览页本周工作流状态为硬编码** — 应根据实际数据判断当前步骤
+5. **执行确认未触发账本写入** — 确认/拒绝操作只更新状态, 不写 cash_ledger
+
+#### 建议下一阶段优先事项
+1. 修复数据质量 API 的 etfCode 筛选 (返回所有 metric)
+2. 修复设置页 ETF 列表 React Query 缓存问题
+3. 连接真实数据源 (AkShare/Tushare) 到 Trends 页
+4. 实现 Sprint 1 核心: 策略参数注入规则引擎, 快照变化作废, degraded 禁用增强仓
+5. 实现执行确认→账本写入事务闭环
+
+---
+
 ## 一、项目当前状态描述/判断
 
 ### 代码库来源

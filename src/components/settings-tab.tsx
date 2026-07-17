@@ -285,10 +285,10 @@ function StrategyVersionSection() {
   const targetRatios = useMemo(() => {
     if (!activeVersion?.parameters?.target_ratios) return [];
     const ratios = activeVersion.parameters.target_ratios as Record<string, number>;
-    return Object.entries(ratios).map(([code, bps]) => ({
+    return Object.entries(ratios).map(([code, ratio]) => ({
       code,
-      bps,
-      percent: bps / 10000,
+      bps: Math.round(ratio * 10000),
+      percent: ratio * 100,
     })).sort((a, b) => b.bps - a.bps);
   }, [activeVersion]);
 
@@ -736,16 +736,37 @@ function WeeklyBudgetSection() {
   const [isEditing, setIsEditing] = useState(false);
 
   const budgetFields = [
-    { key: 'weekly_contribution_committed', label: '本周注资', desc: '本周承诺投入的资金（元）', type: 'number' },
-    { key: 'strategy_weekly_budget', label: '策略周预算', desc: '本周策略引擎使用的预算（元）', type: 'number' },
+    { key: 'weekly_contribution_committed', label: '本周注资', desc: '本周承诺投入的资金（元，来自现金子账户）', type: 'number', isCashAccount: true },
+    { key: 'weekly_budget', label: '策略周预算', desc: '本周策略引擎使用的预算（元）', type: 'number' },
     { key: 'base_bucket_ratio', label: '基础仓比例', desc: '基础仓分配比例（万分比 bps）', type: 'number' },
     { key: 'value_bucket_ratio', label: '增强仓比例', desc: '增强仓分配比例（万分比 bps）', type: 'number' },
   ];
 
+  // Helper: render budget field value with fallback for missing keys
+  const committedCashBalance = accounts.find(a => a.accountType === 'weekly_contribution_committed')?.balanceYuan ?? null;
+  const renderBudgetFieldValue = (f: typeof budgetFields[number]) => {
+    // Cash account field: read from cash account balance
+    if ('isCashAccount' in f && f.isCashAccount) {
+      return committedCashBalance != null ? formatMoney(committedCashBalance) : '—';
+    }
+    const raw = configs[f.key];
+    if (raw === undefined || raw === '') return '—';
+    if (f.key.includes('ratio')) return `${raw} bps`;
+    const num = Number(raw);
+    return isNaN(num) ? '—' : formatMoney(num / 100);
+  };
+
   // Initialize local configs when data loads
   const handleStartEdit = () => {
     const initial: Record<string, string> = {};
-    budgetFields.forEach(f => { initial[f.key] = configs[f.key] ?? ''; });
+    budgetFields.forEach(f => {
+      if ('isCashAccount' in f && f.isCashAccount) {
+        // Cash account field: not editable via system-configs, skip
+        initial[f.key] = String(committedCashBalance ?? '');
+      } else {
+        initial[f.key] = configs[f.key] ?? '';
+      }
+    });
     setLocalConfigs(initial);
     setIsEditing(true);
   };
@@ -770,12 +791,18 @@ function WeeklyBudgetSection() {
 
   const handleSave = () => {
     const updates = budgetFields
-      .filter(f => localConfigs[f.key] !== undefined)
+      .filter(f => !('isCashAccount' in f && f.isCashAccount)) // skip cash account fields
+      .filter(f => localConfigs[f.key] !== undefined && localConfigs[f.key] !== '')
       .map(f => ({ configKey: f.key, configValue: localConfigs[f.key] }));
     updateMutation.mutate(updates);
   };
 
+  const canEditField = (f: typeof budgetFields[number]) => {
+    return !('isCashAccount' in f && f.isCashAccount);
+  };
+
   // EAB calculation
+  /* eslint-disable react-hooks/preserve-manual-memoization */
   const eabBreakdown = useMemo(() => {
     const investEquity = accounts.find(a => a.accountType === 'weekly_unallocated_cash')?.balanceYuan ?? 0;
     const unallocatedCash = accounts.find(a => a.accountType === 'weekly_unallocated_cash')?.balanceYuan ?? 0;
@@ -792,6 +819,7 @@ function WeeklyBudgetSection() {
       committed: committed ?? 0,
     };
   }, [accounts]);
+  /* eslint-enable react-hooks/preserve-manual-memoization */
 
   const totalEAB = (eabBreakdown.investEquity ?? 0) + (eabBreakdown.unallocatedCash ?? 0) + (eabBreakdown.qdiiPending ?? 0) + (eabBreakdown.reserve ?? 0);
 
@@ -819,7 +847,7 @@ function WeeklyBudgetSection() {
           {budgetFields.map((f) => (
             <div key={f.key} className="space-y-1.5">
               <Label className="text-sm font-medium">{f.label}</Label>
-              {isEditing ? (
+              {isEditing && canEditField(f) ? (
                 <Input
                   type={f.type}
                   value={localConfigs[f.key] ?? ''}
@@ -827,7 +855,8 @@ function WeeklyBudgetSection() {
                 />
               ) : (
                 <p className="text-sm font-mono bg-muted rounded-md px-3 py-2">
-                  {f.key.includes('ratio') ? `${configs[f.key]} bps` : formatMoney(Number(configs[f.key]) / 100)}
+                  {renderBudgetFieldValue(f)}
+                  {isEditing && !canEditField(f) && <span className="ml-2 text-[10px] text-muted-foreground/60">只读</span>}
                 </p>
               )}
               <p className="text-xs text-muted-foreground">{f.desc}</p>
