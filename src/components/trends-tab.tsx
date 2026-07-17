@@ -52,6 +52,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 
 import type { EtfConfigWithSnapshot, ApiResponse, DataQualityLogDisplay } from '@/lib/types';
 import { FadeInUp } from '@/lib/motion';
@@ -171,7 +172,7 @@ function generateMockPremium(meta: EtfMeta): PremiumData | null {
   const premium = Number((rng() * 8 - 1).toFixed(2));
   const nav = meta.baseNav;
   const iopv = Number((nav * (1 - premium / 100)).toFixed(4));
-  const status = premium > 5 ? 'high' : premium > 2 ? 'elevated' : 'normal';
+  const status = premium > 5 ? 'high' : premium > 3 ? 'elevated' : 'normal';
   return { premium, nav, iopv, status };
 }
 
@@ -600,6 +601,74 @@ function PremiumSection({ data }: { data: PremiumData | null }) {
         </p>
       </CardContent>
     </Card>
+  );
+}
+
+/** QDII Premium Alert Card — alert-style card for premium status */
+function QdiiPremiumAlertCard({
+  data,
+  etfCode,
+  etfName,
+}: {
+  data: PremiumData;
+  etfCode: string;
+  etfName: string;
+}) {
+  const alertType = data.premium > 5 ? 'danger' : data.premium > 3 ? 'warning' : 'safe';
+
+  const alertConfig = {
+    safe: {
+      border: 'border-emerald-200 dark:border-emerald-800/40',
+      bg: 'bg-emerald-50/50 dark:bg-emerald-950/10',
+      badgeClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+      badgeLabel: '正常',
+      icon: <Shield className="size-4 text-emerald-500" />,
+      textColor: 'text-emerald-600 dark:text-emerald-400',
+    },
+    warning: {
+      border: 'border-amber-200 dark:border-amber-800/40',
+      bg: 'bg-amber-50/30 dark:bg-amber-950/10',
+      badgeClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+      badgeLabel: '警告',
+      icon: <AlertTriangle className="size-4 text-amber-500" />,
+      textColor: 'text-amber-600 dark:text-amber-400',
+    },
+    danger: {
+      border: 'border-red-200 dark:border-red-800/40',
+      bg: 'bg-red-50/30 dark:bg-red-950/10',
+      badgeClass: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+      badgeLabel: '危险',
+      icon: <AlertTriangle className="size-4 text-red-500" />,
+      textColor: 'text-red-600 dark:text-red-400',
+    },
+  }[alertType];
+
+  return (
+    <Alert className={`border ${alertConfig.border} ${alertConfig.bg}`}>
+      <Shield className="size-4 text-muted-foreground" />
+      <AlertTitle className="flex items-center gap-2 text-sm">
+        {alertConfig.icon}
+        QDII 溢价状态 — {etfName} ({etfCode})
+        <Badge className={`${alertConfig.badgeClass} border-0 text-[10px]`}>
+          {alertConfig.badgeLabel}
+        </Badge>
+      </AlertTitle>
+      <AlertDescription className="mt-1.5 space-y-1.5">
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-muted-foreground">当前溢价率</span>
+          <span className={`text-base font-bold font-mono ${alertConfig.textColor}`}>
+            {data.premium > 0 ? '+' : ''}{data.premium}%
+          </span>
+        </div>
+        <div className="flex items-center gap-4 text-[10px] text-muted-foreground">
+          <span>场内净值: <span className="font-mono">{data.nav.toFixed(4)}</span></span>
+          <span>IOPV: <span className="font-mono">{data.iopv.toFixed(4)}</span></span>
+        </div>
+        <p className="text-[10px] text-muted-foreground/70 mt-1">
+          溢价阈值: &lt;3% 正常 | 3-5% 警告 | &gt;5% 危险（禁止买入）
+        </p>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -1300,7 +1369,26 @@ export function TrendsTab() {
               <Separator orientation="vertical" className="h-4 hidden sm:block" />
               <div>
                 <span className="text-muted-foreground">名称</span>
+<<<<<<< Updated upstream
                 <span className="ml-1.5 font-medium">{currentConfig.name}</span>
+=======
+                <span className="font-medium">{currentConfig.name}</span>
+                {/* Mini sparkline */}
+                <div className="inline-block w-20 h-8 hidden sm:block">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={priceData.slice(-14)}>
+                      <Line
+                        type="monotone"
+                        dataKey="nav"
+                        stroke={priceChange >= 0 ? '#10b981' : '#ef4444'}
+                        strokeWidth={1.5}
+                        dot={false}
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+>>>>>>> Stashed changes
               </div>
               <div>
                 <span className="text-muted-foreground">目标比例</span>
@@ -1369,6 +1457,13 @@ export function TrendsTab() {
       {premiumData && dividendData && (
         <FadeInUp delay={0.22}>
           <DividendSection data={dividendData} />
+        </FadeInUp>
+      )}
+
+      {/* QDII Premium Alert Card — only for QDII ETFs */}
+      {premiumData && (
+        <FadeInUp delay={0.23}>
+          <QdiiPremiumAlertCard data={premiumData} etfCode={selectedEtf} etfName={meta.name} />
         </FadeInUp>
       )}
 

@@ -52,3 +52,5 @@ prompt
 server.log
 # Skills directory
 /skills/
+# agent artifacts
+agent-ctx/

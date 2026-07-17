@@ -602,3 +602,192 @@ Stage Summary:
 - ✅ Lint 通过 (0 errors)
 - ✅ Dev server 正常，所有 API 200
 - ✅ 总览页新增 2 个卡片 (甜甜圈图 + 预算使用条)，执行单卡片增强
+<<<<<<< Updated upstream
+=======
+
+---
+Task ID: 3-b
+Agent: ui-enhancer
+Task: Enhanced UI with reject dialog, workflow animations, quick actions, sparklines, keyboard shortcuts
+
+Work Log:
+- **Reject Reason Dialog** (overview-tab.tsx): Added Dialog component with ETF code/name display, planned amount, required Textarea for reject reason, red "确认拒绝" button with loading state, and "取消" button. Reject mutation now accepts `{ id, reason }` object instead of just `orderId`.
+- **Workflow Progress Bar Enhancement** (overview-tab.tsx): Added `/api/workflow-status` query with fallback to derived state. Implemented framer-motion animations: checkmark spring entrance for completed steps, pulsing glow effect (`motion.div` with scale/opacity animation) on current active step, `scaleX` animation on connector lines between steps. Added step description text below each step (hidden on smaller screens, visible on lg+).
+- **Confirm/Reject Loading States** (overview-tab.tsx): Confirm button shows `Loader2` spinner with "确认中" text during mutation. Reject button shows `Loader2` spinner. Status badge wrapped in `AnimatePresence mode="wait"` + `motion.div` with fade+slide (y:-4 → y:0 → y:4) transition keyed on `order.status`.
+- **Quick Actions Bar** (overview-tab.tsx): New `QuickActionsBar` component at bottom of overview tab. Glass morphism styling (`backdrop-blur-xl bg-white/70 dark:bg-gray-900/70 border border-white/20 dark:border-gray-700/30 rounded-2xl`). Three buttons: "手动注资" (Wallet icon, opens Dialog with Input for amount → POST to `/api/cash-accounts`), "刷新数据" (RefreshCw icon, invalidates all query keys, spinning icon during refresh), "导出周报" (Download icon, toast.info placeholder). Entrance animation via `motion.div` (opacity 0→1, y 20→0).
+- **Mini Sparkline** (trends-tab.tsx): Added 80×32px `ResponsiveContainer` + `LineChart` + `Line` next to ETF name in info banner. Uses last 14 data points from `priceData`. Green stroke (#10b981) if trend up, red (#ef4444) if down. No axes, no tooltip, no dots, `isAnimationActive={false}` for instant render.
+- **Keyboard Shortcuts Help** (page.tsx): Added `HelpCircle` button in header (next to ThemeToggle). Dialog shows 6 shortcuts: 1/2/3 (tab switch), D (dark mode toggle), R (page refresh), ? (open help). `useEffect` with `keydown` listener, ignores events when focused on INPUT/TEXTAREA/SELECT. Each shortcut displayed as `label` + `<kbd>` styled key badge.
+
+Stage Summary:
+- Reject flow now requires mandatory reason input via Dialog, improving audit trail
+- Workflow stepper has polished framer-motion animations (checkmark spring, pulse glow, connector scaleX)
+- Execution order actions show clear loading states and animated status badge transitions
+- Quick actions bar provides fast access to common operations with glass morphism design
+- ETF info banner sparkline gives visual price trend context at a glance
+- Keyboard shortcuts improve power user productivity
+- ✅ Lint passes (0 errors)
+
+---
+Task ID: 3-a
+Agent: backend-fixer
+Task: Fix data quality API, execution→ledger, workflow status, MA40
+
+Work Log:
+- **Fix Data Quality API** (api/data-quality/route.ts): Changed per-ETF query from `findMany` (all historical records) to `groupBy` on `metricName` with `_max: { createdAt: true }`, then fetching the exact latest record per metric via `findFirst`. Now `?etfCode=510300` returns only the latest record for each metric (pe_percentile, pb_percentile, premium_rate, nav, dividend_yield) instead of all historical records.
+- **Execution Confirmation → Cash Ledger** (api/execution-orders/route.ts): Modified PUT handler to wrap order status update + cash ledger write in `db.$transaction`. On confirm: buy orders debit `weekly_unallocated_cash` / credit `daily_cash`; sell orders debit `daily_cash` / credit `weekly_unallocated_cash`. On reject: writes revert entry (daily_cash → weekly_unallocated_cash). Uses `createMany` for debit+credit pair with transferId format `order-{id}-confirm` or `order-{id}-reject` and referenceId `order-{id}`. Only writes when `plannedAmountFen > 0`.
+- **Workflow Status API** (api/workflow-status/route.ts): New GET endpoint checking 7 steps against actual data: (0) recent holding snapshots, (1) recent data quality logs, (2) weekly_contribution_committed balance/this-week transfers, (3) no blocking quality statuses (missing/conflict), (4) recent calculation logs, (5) all orders confirmed/rejected (none pending), (6) recent execution fills. Returns `{ currentStep: 0-7, steps: [{step, label, done, reason}] }`. Step 7 means all done → 复盘 can start.
+- **Fix MA40 Display** (trends-tab.tsx): Added `ma40Available` boolean flag. MA40 now shows "N/A (需40日数据)" when data points < 40 instead of bare "—". MA relationship badge (多头排列/空头排列) shows "数据不足" when MA40 unavailable, preventing false bearish signal.
+- **Pre-existing Lint Fix** (overview-tab.tsx): Fixed `react-hooks/immutability` error where `rejectMutation` was referenced in `handleRejectConfirm` before declaration — reordered mutation declarations above the callback.
+
+Stage Summary:
+- Data quality API now correctly returns one record per metric per ETF
+- Execution order confirm/reject creates audit trail in cash_ledger via transactional writes
+- Workflow status is now data-driven (consumed by existing overview stepper from task 3-b)
+- MA40 gracefully handles insufficient data with informative message
+- ✅ Lint passes (0 errors)
+
+---
+Task ID: 3-c
+Agent: main-session
+Task: Session 3 QA, GitHub push, cron setup, worklog update
+
+Work Log:
+- Read worklog.md to understand project state (Sprint 0/1 complete, 3 tabs functional, 15 API routes)
+- Ran agent-browser QA on all 3 tabs: Overview (7+ cards, workflow, donut chart, execution orders), Trends (6 ETFs, MACD/RSI/MA, quality scores), Settings (7 accordions)
+- No console errors, all data renders correctly
+- Launched 2 parallel subagents for backend fixes and UI enhancements
+- Backend agent: fixed data quality API, execution→ledger transaction, workflow status API, MA40 display
+- UI agent: added reject reason dialog, workflow animations, quick actions bar, sparklines, keyboard shortcuts
+- Verified lint (0 errors) and ran comprehensive QA
+- Created branch `feature/v5-dashboard-complete`, committed 8 files (+834 lines), pushed to GitHub
+- Set up 15-minute cron job (ID: 276823) for automated webDevReview sessions
+
+Stage Summary:
+- All 3 tabs render correctly with no runtime errors
+- 4 backend bug fixes applied, 6 UI enhancements added
+- Code pushed to GitHub: whatgaohui/etf-autopilot-public → feature/v5-dashboard-complete
+- Automated 15-min development cycle configured
+
+---
+
+### 2026-07-17 Session 3 总结 (自动化轮次)
+
+#### 项目当前状态描述/判断
+ETF Autopilot V5.0 前端应用运行稳定。三个工作区（总览/趋势/设置）全部功能正常，16 个 API 路由（含新增 workflow-status），15 张数据库表。本轮新增 10 项功能/修复，代码量增加 834 行。
+
+#### 当前目标 / 已完成的修改
+
+**Bug 修复 (4 项):**
+1. 数据质量 API: 按 ETF 筛选时返回每个 metric 最新记录（而非全部历史）
+2. 执行确认→现金账本: 确认/拒绝执行单时事务性写入 cash_ledger
+3. 工作流状态: 新增 /api/workflow-status 接口，根据实际数据判断当前步骤
+4. MA40 显示: 数据不足时显示 "N/A (需40日数据)" 而非 "—"
+
+**新功能 (6 项):**
+1. 拒绝原因对话框: 点击拒绝弹出 Dialog，必填拒绝理由
+2. 工作流进度条增强: 动态状态 + 弹簧动画完成标记 + 脉冲光晕当前步骤
+3. 快速操作栏: 底部悬浮 glass morphism 栏（手动注资/刷新数据/导出周报）
+4. ETF 迷你 Sparkline: 趋势页 ETF 信息横幅旁的小型走势图
+5. 键盘快捷键帮助: "?" 按钮打开快捷键 Dialog (1/2/3/D/R)
+6. 执行单状态动画: 确认/拒绝按钮加载态 + 状态切换 AnimatePresence
+
+#### 验证结果
+- ✅ Lint 0 错误
+- ✅ agent-browser QA: 三个 Tab 全部渲染正确
+- ✅ 新 API: /api/workflow-status 返回 { currentStep: 3, steps: [...] }
+- ✅ 数据质量 API: ?etfCode=510300 返回最新 metric 记录
+- ✅ MA40: 正确显示 "N/A (需40日数据)"
+- ✅ 快速操作栏: 手动注资/刷新数据/导出周报 按钮可见
+- ✅ 键盘快捷键: "键盘快捷键" 按钮在 header 中
+- ✅ GitHub 推送成功: feature/v5-dashboard-complete 分支
+
+#### 未解决问题或风险
+1. **种子数据不足**: 每个 ETF 只有 1 条 data quality metric 记录（pe_percentile），缺少 pb/nav/dividend_yield 等多 metric 数据
+2. **Tab 切换丢失本地 state**: ETF 选择器/表单输入在切换 tab 时重置（React Query 数据保留）
+3. **趋势页数据全部模拟**: 价格/估值/溢价/技术指标均为随机生成
+4. **Next.js Dev Tools overlay**: 页面底部有 Next.js 开发工具按钮（仅 dev 模式可见）
+5. **Console 空 error 条目**: agent-browser 检测到 6 条空错误，疑似 Next.js dev overlay 内部行为
+
+#### 建议下一阶段优先事项
+1. **丰富种子数据**: 为每个 ETF 添加多 metric 质量记录 (pe_percentile, pb_percentile, premium_rate, nav, dividend_yield)
+2. **手动注资功能完善**: 连接 POST /api/cash-accounts 实现真实注资
+3. **执行单成交回填 UI**: 在 Overview 中添加成交回填 Dialog（价格/份额/手续费）
+4. **设置页规则参数编辑**: 实现规则参数的内联编辑和保存
+5. **Sprint 2 核心**: 策略参数注入规则引擎，快照变化作废机制
+6. **响应式优化**: 移动端快速操作栏适配、趋势页 sparkline 在小屏隐藏
+
+---
+Task ID: 4-a
+Agent: seed-data-enricher
+Task: Enrich seed data with 5 metrics per ETF (30 total records)
+
+Work Log:
+- Read worklog.md and prisma/schema.prisma to understand DataQualityLog model fields and constraints
+- Read existing seed.ts qualityLogs array (8 records) and the data-quality API route logic
+- Replaced 8 quality log entries with 30 records (6 ETFs × 5 metrics each)
+- Metrics per ETF: pe_percentile, pb_percentile, premium_today, nav, dividend_yield_percentile
+- Verified all sub-scores (freshness+consistency+completeness+abnormal+source) sum to total score
+- Cleared all tables and re-ran `bunx prisma db seed` → 30 data quality logs confirmed
+- Verified per-ETF API `/api/data-quality?etfCode=510300` returns 5 records (one per metric)
+- Verified QDII ETF 513300 correctly shows: pe_percentile=missing(30), premium_today=conflict(45), nav=stale(65)
+- Verified summary API `/api/data-quality` returns total=30, byStatus={valid:26, degraded:1, stale:1, conflict:1, missing:1}
+- Ran `bun run lint` — no errors
+
+Stage Summary:
+- Seed data now has 30 quality log records across 5 metrics per ETF (up from 8 records)
+- Quality status distribution: 26 valid, 1 degraded, 1 stale, 1 conflict, 1 missing
+- 512890 dividend_yield_percentile is highest quality (score=98, marked as primary metric)
+- QDII ETFs (513500, 513300) have realistic degraded/stale/conflict/missing statuses
+- All sub-scores are mathematically consistent with total scores
+- Lint passes clean
+
+---
+Task ID: 4-b
+Agent: fill-dialog-builder
+Task: Build execution fill dialog and API
+
+Work Log:
+- Read and analyzed existing execution-fills API (`/api/execution-fills/route.ts`), execution-orders API, overview-tab component, Prisma schema, and shared types
+- Updated `/api/execution-fills/route.ts` POST handler to auto-transition order status after fill: `confirmed` → `partially_executed` (if fills > 0 but < planned), or `executed` (if total fill amount >= planned amount)
+- Created `/src/components/fill-execution-dialog.tsx` — a full dialog component with: header showing ETF name/code, buy/sell direction badge, read-only plan info (金额 + 份额), price input (元/份), shares input (份), auto-calculated amount (price × shares), fee input (default 5.00 元), datetime-local for executedAt, auto-generated idempotency key (using ref for stability per open cycle), emerald "提交回填" button and "取消" button
+- Dialog uses framer-motion FadeInUp for entrance animation, emerald/teal color scheme, all shadcn/ui components
+- Added "成交回填" button to confirmed and partially_executed orders in `overview-tab.tsx` using teal-600 color and ArrowDownToLine icon
+- Added fill history section using Collapsible component: shows "已回填 N 笔成交" with expandable mini-table displaying 成交时间/价格/份额/金额/手续费 per fill
+- Integrated FillExecutionDialog into ExecutionOrdersSection, wired up with fill dialog state management
+- All API mutations use correct field names matching backend Zod schema (sharesX10000, priceFen, amountFen, feeFen)
+- Ran `bun run lint` — 0 errors, 0 warnings
+
+Stage Summary:
+- Fill dialog fully functional: opens from confirmed/partially_executed orders, auto-calculates amount, submits to `/api/execution-fills`
+- API auto-transitions order status based on cumulative fill amounts vs planned amount
+- Fill history visible as collapsible table under orders with existing fills
+- Idempotency protection via auto-generated stable key per dialog open cycle
+- Color scheme: emerald/teal throughout, no indigo/blue
+
+---
+Task ID: 4-c
+Agent: styling-polish-agent
+Task: Add styling polish, new cards, responsive improvements
+
+Work Log:
+- Added `Progress` import to overview-tab.tsx (was used but not imported)
+- Created `WeeklyPerformanceSummary` component — compact 3-column card with gradient emerald→teal border showing: total assets with +1.2% indicator, weekly contribution with Wallet icon, execution rate with mini progress bar (confirmed/total excluding blocked/rejected)
+- Created `CashConservationCheck` component — shows previous cash total (from latestCalculation.eabYuan) vs current cash total (sum of cash accounts), diff with 3-state coloring (emerald=exact match, amber=<¥100 diff, red=>=¥100 diff), last check timestamp
+- Inserted WeeklyPerformanceSummary right after WeeklyTaskStatusBar in the Overview render
+- Inserted CashConservationCheck between the Holdings+Cash grid and WeeklyBudgetUtilization
+- Enhanced execution order cards with: created_at timestamp ("创建于 MM/DD HH:mm") and truncated order ID (monospace, "ORD-…XXXX") shown below the ETF code/amount row
+- Added side-based left border color for default-state orders: `border-l-2 border-l-emerald-500` for buy, `border-l-red-500` for sell
+- Updated settings-tab.tsx `CATEGORY_COLORS`: A股宽基→emerald, QDII→amber, 红利→rose (was blue/purple/amber); added fallback keys for 'domestic', 'overseas', 'dividend'
+- Created `QdiiPremiumAlertCard` in trends-tab.tsx — Alert-style card for QDII ETFs showing: current premium rate with color-coded status badge (正常<3%/警告3-5%/危险>5%), NAV and IOPV values, threshold legend, AlertTriangle icon for warning/danger states
+- Updated premium threshold from 2% to 3% for elevated status in `generateMockPremium`
+- Added Alert/AlertTitle/AlertDescription import to trends-tab.tsx
+- Mobile responsive: added `max-w-[200px] mx-auto md:mx-0` to donut chart container for proper mobile centering, added `hidden sm:block` to sparkline container in ETF info banner, added `select-none` to mobile pill nav and desktop sidebar nav buttons
+- Ran `bun run lint` — 0 errors, 0 warnings
+
+Stage Summary:
+- 2 new overview cards: WeeklyPerformanceSummary (gradient border, FadeInUp) and CashConservationCheck (emerald/amber/red 3-state)
+- Execution order cards now show creation timestamp, truncated ID, and side-based left border color
+- Settings ETF category badges use emerald/amber/rose color scheme (no blue/purple)
+- New QDII Premium Alert Card in trends tab with 3-tier status system and threshold info
+- Mobile improvements: donut chart centered on mobile, sparkline hidden on mobile, select-none on nav buttons
+>>>>>>> Stashed changes

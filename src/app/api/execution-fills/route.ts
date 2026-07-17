@@ -80,16 +80,28 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Update order's actual amounts (sum of all fills)
+    // Update order's actual amounts + auto-transition status (sum of all fills)
     const allFills = await db.executionFill.findMany({ where: { orderId } });
     const totalActualAmountFen = allFills.reduce((sum, f) => sum + f.amountFen, 0);
     const totalActualShares = allFills.reduce((sum, f) => sum + f.shares, 0);
+
+    // Determine new status based on whether fills cover the planned amount
+    const plannedAmount = order.plannedAmountFen;
+    let newStatus: string | null = null;
+    if (order.status === "confirmed" || order.status === "partially_executed") {
+      if (plannedAmount > 0 && totalActualAmountFen >= plannedAmount) {
+        newStatus = "executed";
+      } else if (totalActualAmountFen > 0) {
+        newStatus = "partially_executed";
+      }
+    }
 
     await db.executionOrder.update({
       where: { id: orderId },
       data: {
         actualAmountFen: totalActualAmountFen,
         actualShares: totalActualShares,
+        ...(newStatus ? { status: newStatus } : {}),
       },
     });
 

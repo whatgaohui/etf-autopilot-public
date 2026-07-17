@@ -81,7 +81,7 @@ export default function Home() {
                   type="button"
                   onClick={() => setActiveTab(item.value)}
                   className={[
-                    'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-all duration-200',
+                    'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-all duration-200 select-none',
                     isActive
                       ? 'bg-emerald-600 text-white shadow-soft'
                       : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
@@ -114,7 +114,7 @@ export default function Home() {
                       type="button"
                       onClick={() => setActiveTab(item.value)}
                       className={[
-                        'group relative flex w-full items-center gap-2.5 rounded-md border-l-2 px-3 py-2 text-sm transition-all duration-200',
+                        'group relative flex w-full items-center gap-2.5 rounded-md border-l-2 px-3 py-2 text-sm transition-all duration-200 select-none',
                         isActive
                           ? 'border-l-emerald-500 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-semibold'
                           : 'border-l-transparent text-muted-foreground hover:bg-accent/50 hover:text-foreground',

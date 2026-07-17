@@ -864,47 +864,110 @@ async function main() {
   // ═══════════════════════════════════════════════════════════
   console.log('  ✅ DataQualityLog...')
 
+  // 6 ETFs × 5 metrics = 30 records
+  // Score = freshness(0-25) + consistency(0-30) + completeness(0-20) + abnormal(0-15) + source(0-10)
   const qualityLogs = [
-    {
-      etf: '510300', metric: 'pe_percentile', status: 'valid' as const,
-      score: 97, fresh: 24, consist: 28, complete: 19, abnormal: 14, source: 10,
-      canRule: true, canStrong: true, reason: null,
-    },
-    {
-      etf: '510500', metric: 'pe_percentile', status: 'valid' as const,
-      score: 94, fresh: 23, consist: 27, complete: 19, abnormal: 14, source: 9,
-      canRule: true, canStrong: true, reason: null,
-    },
-    {
-      etf: '588000', metric: 'pe_percentile', status: 'valid' as const,
-      score: 91, fresh: 22, consist: 26, complete: 18, abnormal: 14, source: 9,
-      canRule: true, canStrong: true, reason: null,
-    },
-    {
-      etf: '512890', metric: 'dividend_yield_percentile', status: 'valid' as const,
-      score: 96, fresh: 25, consist: 28, complete: 19, abnormal: 13, source: 9,
-      canRule: true, canStrong: true, reason: null,
-    },
-    {
-      etf: '513500', metric: 'premium_today', status: 'degraded' as const,
-      score: 55, fresh: 10, consist: 15, complete: 19, abnormal: 5, source: 4,
-      canRule: true, canStrong: false, reason: '溢价数据2天未更新，AkShare接口返回延迟',
-    },
-    {
-      etf: '513500', metric: 'pe_percentile', status: 'valid' as const,
+    // ─── 510300 沪深300: All 5 valid, scores 90-98 ─────────────
+    { etf: '510300', metric: 'pe_percentile', status: 'valid' as const,
+      score: 95, fresh: 24, consist: 28, complete: 19, abnormal: 14, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '510300', metric: 'pb_percentile', status: 'valid' as const,
+      score: 94, fresh: 24, consist: 27, complete: 19, abnormal: 14, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '510300', metric: 'premium_today', status: 'valid' as const,
+      score: 96, fresh: 25, consist: 28, complete: 19, abnormal: 14, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '510300', metric: 'nav', status: 'valid' as const,
+      score: 92, fresh: 23, consist: 27, complete: 19, abnormal: 13, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '510300', metric: 'dividend_yield_percentile', status: 'valid' as const,
+      score: 90, fresh: 22, consist: 26, complete: 19, abnormal: 13, source: 10,
+      canRule: true, canStrong: true, reason: null },
+
+    // ─── 510500 中证500: All 5 valid, scores 88-95 ─────────────
+    { etf: '510500', metric: 'pe_percentile', status: 'valid' as const,
+      score: 94, fresh: 23, consist: 28, complete: 19, abnormal: 14, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '510500', metric: 'pb_percentile', status: 'valid' as const,
+      score: 92, fresh: 23, consist: 27, complete: 19, abnormal: 13, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '510500', metric: 'premium_today', status: 'valid' as const,
+      score: 90, fresh: 22, consist: 27, complete: 18, abnormal: 13, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '510500', metric: 'nav', status: 'valid' as const,
+      score: 91, fresh: 22, consist: 27, complete: 19, abnormal: 13, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '510500', metric: 'dividend_yield_percentile', status: 'valid' as const,
+      score: 88, fresh: 21, consist: 26, complete: 19, abnormal: 12, source: 10,
+      canRule: true, canStrong: true, reason: null },
+
+    // ─── 588000 科创50: All 5 valid, scores 85-93 ──────────────
+    { etf: '588000', metric: 'pe_percentile', status: 'valid' as const,
+      score: 91, fresh: 22, consist: 27, complete: 18, abnormal: 14, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '588000', metric: 'pb_percentile', status: 'valid' as const,
+      score: 89, fresh: 22, consist: 26, complete: 18, abnormal: 13, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '588000', metric: 'premium_today', status: 'valid' as const,
+      score: 87, fresh: 21, consist: 26, complete: 18, abnormal: 12, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '588000', metric: 'nav', status: 'valid' as const,
+      score: 85, fresh: 20, consist: 26, complete: 18, abnormal: 12, source: 9,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '588000', metric: 'dividend_yield_percentile', status: 'valid' as const,
+      score: 93, fresh: 23, consist: 27, complete: 19, abnormal: 14, source: 10,
+      canRule: true, canStrong: true, reason: null },
+
+    // ─── 512890 红利低波: All 5 valid, dividend primary 98 ─────
+    { etf: '512890', metric: 'pe_percentile', status: 'valid' as const,
+      score: 94, fresh: 23, consist: 27, complete: 19, abnormal: 15, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '512890', metric: 'pb_percentile', status: 'valid' as const,
+      score: 92, fresh: 23, consist: 27, complete: 19, abnormal: 13, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '512890', metric: 'premium_today', status: 'valid' as const,
+      score: 95, fresh: 24, consist: 28, complete: 19, abnormal: 14, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '512890', metric: 'nav', status: 'valid' as const,
+      score: 93, fresh: 23, consist: 27, complete: 19, abnormal: 14, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '512890', metric: 'dividend_yield_percentile', status: 'valid' as const,
+      score: 98, fresh: 25, consist: 28, complete: 20, abnormal: 15, source: 10,
+      canRule: true, canStrong: true, reason: '红利ETF核心指标，数据质量最优' },
+
+    // ─── 513500 标普500 QDII: premium degraded, pe lower ──────
+    { etf: '513500', metric: 'pe_percentile', status: 'valid' as const,
       score: 72, fresh: 18, consist: 20, complete: 19, abnormal: 10, source: 5,
-      canRule: true, canStrong: false, reason: 'Tushare源数据缺失，仅AkShare可用',
-    },
-    {
-      etf: '513300', metric: 'pe_percentile', status: 'missing' as const,
+      canRule: true, canStrong: false, reason: 'Tushare源数据缺失，仅AkShare可用' },
+    { etf: '513500', metric: 'pb_percentile', status: 'valid' as const,
+      score: 89, fresh: 22, consist: 27, complete: 18, abnormal: 12, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '513500', metric: 'premium_today', status: 'degraded' as const,
+      score: 55, fresh: 12, consist: 16, complete: 19, abnormal: 5, source: 3,
+      canRule: true, canStrong: false, reason: '溢价数据2天未更新，AkShare接口返回延迟' },
+    { etf: '513500', metric: 'nav', status: 'valid' as const,
+      score: 88, fresh: 22, consist: 26, complete: 19, abnormal: 11, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '513500', metric: 'dividend_yield_percentile', status: 'valid' as const,
+      score: 86, fresh: 21, consist: 26, complete: 18, abnormal: 11, source: 10,
+      canRule: true, canStrong: true, reason: null },
+
+    // ─── 513300 纳斯达克100 QDII: pe missing, premium conflict, nav stale ─
+    { etf: '513300', metric: 'pe_percentile', status: 'missing' as const,
       score: 30, fresh: 0, consist: 10, complete: 10, abnormal: 5, source: 5,
-      canRule: false, canStrong: false, reason: '纳斯达克100 PE数据所有源均不可用',
-    },
-    {
-      etf: '513300', metric: 'premium_today', status: 'conflict' as const,
-      score: 45, fresh: 20, consist: 0, complete: 19, abnormal: 5, source: 9,
-      canRule: false, canStrong: false, reason: 'AkShare溢价4.2%, EastMoney溢价7.8%, 差异超阈值',
-    },
+      canRule: false, canStrong: false, reason: '纳斯达克100 PE数据所有源均不可用' },
+    { etf: '513300', metric: 'pb_percentile', status: 'valid' as const,
+      score: 82, fresh: 20, consist: 24, complete: 18, abnormal: 10, source: 10,
+      canRule: true, canStrong: true, reason: null },
+    { etf: '513300', metric: 'premium_today', status: 'conflict' as const,
+      score: 45, fresh: 18, consist: 0, complete: 19, abnormal: 5, source: 3,
+      canRule: false, canStrong: false, reason: 'AkShare溢价4.2%, EastMoney溢价7.8%, 差异超阈值' },
+    { etf: '513300', metric: 'nav', status: 'stale' as const,
+      score: 65, fresh: 10, consist: 20, complete: 19, abnormal: 6, source: 10,
+      canRule: true, canStrong: false, reason: '净值数据T-2延迟，纳斯达克周末休市' },
+    { etf: '513300', metric: 'dividend_yield_percentile', status: 'valid' as const,
+      score: 78, fresh: 19, consist: 23, complete: 18, abnormal: 8, source: 10,
+      canRule: true, canStrong: false, reason: null },
   ]
 
   const dqRecords = await Promise.all(
