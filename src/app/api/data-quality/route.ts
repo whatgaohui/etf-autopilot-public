@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
 
     // Summary: counts by quality_status across all ETFs
     const allLogs = await db.dataQualityLog.findMany({
-      select: { qualityStatus: true },
+      select: { qualityStatus: true, etfCode: true },
     });
 
     const byStatus: Record<string, number> = {

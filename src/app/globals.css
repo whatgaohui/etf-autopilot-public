@@ -381,3 +381,22 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ============================================================
+   Glow ring animation — for current workflow step
+   ============================================================ */
+@keyframes glow-ring {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2); }
+  50% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.1); }
+}
+.animate-glow-ring {
+  animation: glow-ring 2s ease-in-out infinite;
+}
+
+@keyframes glow-ring-sm {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2); }
+  50% { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.1); }
+}
+.animate-glow-ring-sm {
+  animation: glow-ring-sm 2s ease-in-out infinite;
+}

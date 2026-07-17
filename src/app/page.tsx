@@ -3,6 +3,7 @@
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Separator } from '@/components/ui/separator';
 import { BarChart3, TrendingUp, Settings } from 'lucide-react';
 import { OverviewTab } from '@/components/overview-tab';
 import { TrendsTab } from '@/components/trends-tab';
@@ -189,7 +190,8 @@ export default function Home() {
         </div>
 
         {/* ============ Footer — sticky bottom ============ */}
-        <footer className="mt-auto border-t border-border/40 bg-card/30 backdrop-blur-sm">
+        <Separator />
+        <footer className="mt-auto bg-card/30 backdrop-blur-sm">
           <div className="px-4 sm:px-6 lg:px-8 py-3">
             <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground/70">
               <span>

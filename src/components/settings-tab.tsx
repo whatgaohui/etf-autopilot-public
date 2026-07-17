@@ -22,6 +22,8 @@ import {
   CheckCircle2,
   XCircle,
   CircleDot,
+  Clock,
+  ChevronDown,
 } from 'lucide-react';
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -83,6 +85,7 @@ import type {
   CashAccountType,
   StrategyStatus,
   ApiResponse,
+  CalculationLogDisplay,
 } from '@/lib/types';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -490,14 +493,20 @@ function EtfConfigSection() {
   // Edit form
   const [editForm, setEditForm] = useState({ id: '', code: '', name: '', category: '', targetRatioPercent: '' });
 
-  const { data: configsRes, isLoading } = useQuery({
+  const { data: configs, isLoading } = useQuery({
     queryKey: QK.etfConfigs,
-    queryFn: () => fetch('/api/etf-configs').then(r => r.json()) as Promise<ApiResponse<EtfConfigWithSnapshot[]>>,
+    queryFn: async () => {
+      const res = await fetch('/api/etf-configs');
+      const data: ApiResponse<EtfConfigWithSnapshot[]> = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to fetch ETF configs');
+      return data.data!;
+    },
+    staleTime: 0,
   });
 
-  const configs = configsRes?.data ?? [];
+  const configsList = configs ?? [];
 
-  const totalRatio = useMemo(() => configs.reduce((s, c) => s + (c.targetRatioPercent ?? 0), 0), [configs]);
+  const totalRatio = useMemo(() => configsList.reduce((s, c) => s + (c.targetRatioPercent ?? 0), 0), [configsList]);
 
   const addMutation = useMutation({
     mutationFn: async (body: { code: string; name: string; category: string; targetRatioBps: number }) => {
@@ -604,7 +613,7 @@ function EtfConfigSection() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {configs.map((c) => (
+              {configsList.map((c) => (
                 <TableRow key={c.id}>
                   <TableCell className="font-mono font-medium">{c.code}</TableCell>
                   <TableCell>{c.name}</TableCell>
@@ -629,7 +638,7 @@ function EtfConfigSection() {
                   </TableCell>
                 </TableRow>
               ))}
-              {configs.length === 0 && (
+              {configsList.length === 0 && (
                 <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">暂无 ETF 配置</TableCell></TableRow>
               )}
             </TableBody>
@@ -724,13 +733,19 @@ function WeeklyBudgetSection() {
     queryFn: () => fetch('/api/system-configs').then(r => r.json()) as Promise<ApiResponse<SystemConfigMap>>,
   });
 
-  const { data: cashRes, isLoading: cashLoading } = useQuery({
+  const { data: cashAccounts, isLoading: cashLoading } = useQuery({
     queryKey: QK.cashAccounts,
-    queryFn: () => fetch('/api/cash-accounts').then(r => r.json()) as Promise<ApiResponse<CashAccountDisplay[]>>,
+    queryFn: async () => {
+      const res = await fetch('/api/cash-accounts');
+      const data: ApiResponse<CashAccountDisplay[]> = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to fetch cash accounts');
+      return data.data!;
+    },
+    staleTime: 0,
   });
 
   const configs = sysRes?.data ?? {};
-  const accounts = cashRes?.data ?? [];
+  const accounts = cashAccounts ?? [];
 
   const [localConfigs, setLocalConfigs] = useState<Record<string, string>>({});
   const [isEditing, setIsEditing] = useState(false);
@@ -804,24 +819,21 @@ function WeeklyBudgetSection() {
   // EAB calculation
   /* eslint-disable react-hooks/preserve-manual-memoization */
   const eabBreakdown = useMemo(() => {
-    const investEquity = accounts.find(a => a.accountType === 'weekly_unallocated_cash')?.balanceYuan ?? 0;
     const unallocatedCash = accounts.find(a => a.accountType === 'weekly_unallocated_cash')?.balanceYuan ?? 0;
     const qdiiSp500 = accounts.find(a => a.accountType === 'qdii_pending_cash_sp500')?.balanceYuan ?? 0;
     const qdiiNasdaq = accounts.find(a => a.accountType === 'qdii_pending_cash_nasdaq')?.balanceYuan ?? 0;
     const reserve = accounts.find(a => a.accountType === 'rebalance_equity_reserve')?.balanceYuan ?? 0;
-    // Also consider committed contribution
     const committed = accounts.find(a => a.accountType === 'weekly_contribution_committed')?.balanceYuan ?? 0;
     return {
-      investEquity,
       unallocatedCash,
-      qdiiPending: (qdiiSp500 ?? 0) + (qdiiNasdaq ?? 0),
-      reserve: reserve ?? 0,
-      committed: committed ?? 0,
+      qdiiPending: qdiiSp500 + qdiiNasdaq,
+      reserve,
+      committed,
     };
   }, [accounts]);
   /* eslint-enable react-hooks/preserve-manual-memoization */
 
-  const totalEAB = (eabBreakdown.investEquity ?? 0) + (eabBreakdown.unallocatedCash ?? 0) + (eabBreakdown.qdiiPending ?? 0) + (eabBreakdown.reserve ?? 0);
+  const totalEAB = eabBreakdown.unallocatedCash + eabBreakdown.qdiiPending + eabBreakdown.reserve + eabBreakdown.committed;
 
   if (sysLoading || cashLoading) {
     return (
@@ -889,6 +901,7 @@ function WeeklyBudgetSection() {
               <div className="flex justify-between"><span className="text-muted-foreground">未分配权益现金</span><span className="font-mono">{formatMoney(eabBreakdown.unallocatedCash)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">QDII 挂起资金</span><span className="font-mono">{formatMoney(eabBreakdown.qdiiPending)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">再平衡备用金</span><span className="font-mono">{formatMoney(eabBreakdown.reserve)}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">本周承诺注资</span><span className="font-mono">{formatMoney(eabBreakdown.committed)}</span></div>
             </div>
             <Separator className="my-3" />
             <div className="flex items-center justify-between">
@@ -1051,12 +1064,16 @@ function CashAccountSection() {
   const [transferOpen, setTransferOpen] = useState(false);
   const [transferForm, setTransferForm] = useState({ from: '', to: '', amount: '', description: '' });
 
-  const { data: accountsRes, isLoading } = useQuery({
-    queryKey: QK.cashAccounts,
-    queryFn: () => fetch('/api/cash-accounts').then(r => r.json()) as Promise<ApiResponse<CashAccountDisplay[]>>,
+  const { data: accounts, isLoading } = useQuery({
+    queryKey: ['cash-accounts'],
+    queryFn: async () => {
+      const res = await fetch('/api/cash-accounts');
+      const data: ApiResponse<CashAccountDisplay[]> = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to fetch cash accounts');
+      return data.data!;
+    },
+    staleTime: 0,
   });
-
-  const accounts = accountsRes?.data ?? [];
 
   const totalBalance = useMemo(() => accounts.reduce((s, a) => s + (a.balanceYuan ?? 0), 0), [accounts]);
 
@@ -1355,6 +1372,130 @@ function SystemConfigSection() {
   );
 }
 
+// ─── Section 8: Calculation Audit ─────────────────────────────────────────────
+
+function CalculationAuditSection() {
+  const { data: logs, isLoading } = useQuery({
+    queryKey: ['calculation-logs-audit', 10],
+    queryFn: async () => {
+      const res = await fetch('/api/calculation-logs?limit=10');
+      const data: ApiResponse<CalculationLogDisplay[]> = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to fetch calculation logs');
+      return data.data!;
+    },
+    staleTime: 60_000,
+  });
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader><CardTitle>历史计算审计</CardTitle><CardDescription>查看历史计算的详细输入和输出</CardDescription></CardHeader>
+        <CardContent><Skeleton className="h-64 w-full" /></CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Clock className="size-5 text-rose-600" />
+          历史计算审计
+        </CardTitle>
+        <CardDescription>查看历史计算的详细输入、规则命中与数据质量摘要</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {!logs || logs.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">暂无计算记录</p>
+        ) : (
+          <div className="space-y-2 max-h-[500px] overflow-y-auto scrollbar-refined">
+            {logs.map((log) => (
+              <CalcAuditRow key={log.id} log={log} />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CalcAuditRow({ log }: { log: CalculationLogDisplay }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="w-full text-left">
+        <div className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5 cursor-pointer hover:bg-muted/40 transition-colors">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-medium">{formatDateTime(log.createdAt)}</span>
+              <span className="text-[10px] font-mono text-muted-foreground truncate max-w-[100px]">
+                {log.calculationId.slice(0, 8)}…
+              </span>
+              {log.strategyVersion && (
+                <Badge variant="outline" className="text-[10px] font-mono">v{log.strategyVersion}</Badge>
+              )}
+              <Badge variant="secondary" className="text-[10px] font-mono">{log.engineVersion}</Badge>
+            </div>
+            <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground">
+              <span>EAB {formatMoney(log.eabYuan)}</span>
+              <span>预算 {formatMoney(log.budgetYuan)}</span>
+              <span>分配 {formatMoney(log.totalAllocatedYuan)}</span>
+              <span>未分配 {formatMoney(log.totalUnallocatedYuan)}</span>
+            </div>
+          </div>
+          <ChevronDown className={`size-4 text-muted-foreground shrink-0 ml-2 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+        </div>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-1 ml-4 rounded-lg border border-dashed border-border/60 bg-muted/10 px-3 py-3 space-y-3">
+          {/* Inputs Hash */}
+          <div className="space-y-1">
+            <span className="text-[11px] text-muted-foreground font-medium">Inputs Hash</span>
+            <code className="block text-[10px] font-mono text-muted-foreground/80 bg-muted px-2 py-1.5 rounded break-all leading-relaxed">
+              {log.inputsHash}
+            </code>
+          </div>
+
+          {/* Cash Destination */}
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="text-muted-foreground font-medium">资金去向:</span>
+            <span className="font-mono">{log.cashDestination ?? '—'}</span>
+          </div>
+
+          {/* Rules Hit Summary */}
+          <div className="space-y-1">
+            <span className="text-[11px] text-muted-foreground font-medium">规则命中摘要 (rulesHitSummary)</span>
+            {log.rulesHitSummary ? (
+              <pre className="text-[10px] font-mono text-muted-foreground/80 bg-muted px-2 py-1.5 rounded overflow-x-auto max-h-40 overflow-y-auto leading-relaxed">
+                {typeof log.rulesHitSummary === 'string'
+                  ? log.rulesHitSummary
+                  : JSON.stringify(log.rulesHitSummary, null, 2)}
+              </pre>
+            ) : (
+              <span className="text-[11px] text-muted-foreground/60">—</span>
+            )}
+          </div>
+
+          {/* Data Quality Summary */}
+          <div className="space-y-1">
+            <span className="text-[11px] text-muted-foreground font-medium">数据质量摘要 (dataQualitySummary)</span>
+            {log.dataQualitySummary ? (
+              <pre className="text-[10px] font-mono text-muted-foreground/80 bg-muted px-2 py-1.5 rounded overflow-x-auto max-h-40 overflow-y-auto leading-relaxed">
+                {typeof log.dataQualitySummary === 'string'
+                  ? log.dataQualitySummary
+                  : JSON.stringify(log.dataQualitySummary, null, 2)}
+              </pre>
+            ) : (
+              <span className="text-[11px] text-muted-foreground/60">—</span>
+            )}
+          </div>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 // ─── Main Settings Tab ────────────────────────────────────────────────────────
 
 export function SettingsTab() {
@@ -1447,6 +1588,18 @@ export function SettingsTab() {
           </AccordionTrigger>
           <AccordionContent className="px-1 pb-2">
             <SystemConfigSection />
+          </AccordionContent>
+        </AccordionItem>
+
+        <AccordionItem value="calc-audit" className="border rounded-lg px-1">
+          <AccordionTrigger className="px-3 py-3 hover:no-underline">
+            <div className="flex items-center gap-2.5">
+              <Clock className="size-4 text-rose-600" />
+              <span className="font-semibold">历史计算审计</span>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="px-1 pb-2">
+            <CalculationAuditSection />
           </AccordionContent>
         </AccordionItem>
       </Accordion>

@@ -1,0 +1,1455 @@
+     1→'use client';
+     2→
+     3→import { useState, useMemo } from 'react';
+     4→import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+     5→import { toast } from 'sonner';
+     6→import {
+     7→  GitBranch,
+     8→  Wallet,
+     9→  ListChecks,
+    10→  Landmark,
+    11→  Database,
+    12→  Cpu,
+    13→  Plus,
+    14→  Pencil,
+    15→  Trash2,
+    16→  Play,
+    17→  Save,
+    18→  Loader2,
+    19→  RefreshCw,
+    20→  ArrowRightLeft,
+    21→  AlertTriangle,
+    22→  CheckCircle2,
+    23→  XCircle,
+    24→  CircleDot,
+    25→} from 'lucide-react';
+    26→
+    27→import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+    28→import { Button } from '@/components/ui/button';
+    29→import { Input } from '@/components/ui/input';
+    30→import { Label } from '@/components/ui/label';
+    31→import { Badge } from '@/components/ui/badge';
+    32→import { Separator } from '@/components/ui/separator';
+    33→import { Skeleton } from '@/components/ui/skeleton';
+    34→import { Textarea } from '@/components/ui/textarea';
+    35→import { Switch } from '@/components/ui/switch';
+    36→import { ScrollArea } from '@/components/ui/scroll-area';
+    37→import {
+    38→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    39→} from '@/components/ui/table';
+    40→import {
+    41→  Dialog,
+    42→  DialogContent,
+    43→  DialogDescription,
+    44→  DialogFooter,
+    45→  DialogHeader,
+    46→  DialogTitle,
+    47→} from '@/components/ui/dialog';
+    48→import {
+    49→  AlertDialog,
+    50→  AlertDialogAction,
+    51→  AlertDialogCancel,
+    52→  AlertDialogContent,
+    53→  AlertDialogDescription,
+    54→  AlertDialogFooter,
+    55→  AlertDialogHeader,
+    56→  AlertDialogTitle,
+    57→} from '@/components/ui/alert-dialog';
+    58→import {
+    59→  Select,
+    60→  SelectContent,
+    61→  SelectItem,
+    62→  SelectTrigger,
+    63→  SelectValue,
+    64→} from '@/components/ui/select';
+    65→import {
+    66→  Accordion,
+    67→  AccordionContent,
+    68→  AccordionItem,
+    69→  AccordionTrigger,
+    70→} from '@/components/ui/accordion';
+    71→import {
+    72→  Collapsible,
+    73→  CollapsibleContent,
+    74→  CollapsibleTrigger,
+    75→} from '@/components/ui/collapsible';
+    76→
+    77→import type {
+    78→  StrategyVersionDisplay,
+    79→  EtfConfigWithSnapshot,
+    80→  RuleConfigDisplay,
+    81→  CashAccountDisplay,
+    82→  SystemConfigMap,
+    83→  CashAccountType,
+    84→  StrategyStatus,
+    85→  ApiResponse,
+    86→} from '@/lib/types';
+    87→
+    88→// ─── Constants ────────────────────────────────────────────────────────────────
+    89→
+    90→const CASH_ACCOUNT_TYPES: CashAccountType[] = [
+    91→  'daily_cash',
+    92→  'weekly_unallocated_cash',
+    93→  'rebalance_equity_reserve',
+    94→  'qdii_pending_cash_sp500',
+    95→  'qdii_pending_cash_nasdaq',
+    96→  'manual_cash',
+    97→  'weekly_contribution_committed',
+    98→];
+    99→
+   100→const ACCOUNT_LABELS: Record<CashAccountType, string> = {
+   101→  daily_cash: '日常现金',
+   102→  weekly_unallocated_cash: '未分配权益现金',
+   103→  rebalance_equity_reserve: '再平衡备用金',
+   104→  qdii_pending_cash_sp500: 'S&P 500 挂起资金',
+   105→  qdii_pending_cash_nasdaq: '纳斯达克 挂起资金',
+   106→  manual_cash: '手动指定现金',
+   107→  weekly_contribution_committed: '本周承诺注资',
+   108→};
+   109→
+   110→const ACCOUNT_TYPE_COLORS: Record<CashAccountType, string> = {
+   111→  daily_cash: 'bg-slate-500',
+   112→  weekly_unallocated_cash: 'bg-emerald-500',
+   113→  rebalance_equity_reserve: 'bg-teal-500',
+   114→  qdii_pending_cash_sp500: 'bg-violet-500',
+   115→  qdii_pending_cash_nasdaq: 'bg-fuchsia-500',
+   116→  manual_cash: 'bg-amber-500',
+   117→  weekly_contribution_committed: 'bg-cyan-500',
+   118→};
+   119→
+   120→const CATEGORY_COLORS: Record<string, string> = {
+   121→  'A股宽基': 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+   122→  红利: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+   123→  QDII: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+   124→};
+   125→
+   126→const ETF_BAR_COLORS: Record<string, string> = {
+   127→  '510300': 'bg-emerald-500',
+   128→  '510500': 'bg-teal-500',
+   129→  '159915': 'bg-cyan-500',
+   130→  '513300': 'bg-violet-500',
+   131→  '513500': 'bg-fuchsia-500',
+   132→  '159905': 'bg-amber-500',
+   133→};
+   134→
+   135→const RULE_GROUP_LABELS: Record<string, string> = {
+   136→  buy_rules: '买入规则',
+   137→  pause_rules: '暂停规则',
+   138→  rebalance_rules: '再平衡规则',
+   139→  data_quality_rules: '数据质量规则',
+   140→};
+   141→
+   142→const STATUS_STYLES: Record<StrategyStatus, string> = {
+   143→  active: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+   144→  draft: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400',
+   145→  retired: 'bg-stone-100 text-stone-500 dark:bg-stone-900/30 dark:text-stone-500',
+   146→};
+   147→
+   148→const STATUS_LABELS: Record<StrategyStatus, string> = {
+   149→  active: '活跃',
+   150→  draft: '草稿',
+   151→  retired: '已退役',
+   152→};
+   153→
+   154→const MOCK_DATA_SOURCES = [
+   155→  { name: '东方财富', type: '网页采集', status: 'active', quality: 92, isPrimary: true },
+   156→  { name: '天天基金', type: 'API', status: 'active', quality: 88, isPrimary: false },
+   157→  { name: '新浪财经', type: '网页采集', status: 'degraded', quality: 65, isPrimary: false },
+   158→  { name: 'Wind 金融终端', type: 'API', status: 'inactive', quality: 0, isPrimary: false },
+   159→  { name: '聚宽', type: 'API', status: 'inactive', quality: 0, isPrimary: false },
+   160→];
+   161→
+   162→// ─── Helpers ──────────────────────────────────────────────────────────────────
+   163→
+   164→function formatMoney(yuan: number | null | undefined): string {
+   165→  if (yuan == null || isNaN(yuan)) return '¥0.00';
+   166→  return '¥' + Math.abs(yuan).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+   167→}
+   168→
+   169→function formatDate(iso: string | null | undefined): string {
+   170→  if (!iso) return '—';
+   171→  return new Date(iso).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+   172→}
+   173→
+   174→function formatDateTime(iso: string | null | undefined): string {
+   175→  if (!iso) return '—';
+   176→  return new Date(iso).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+   177→}
+   178→
+   179→function yuanToFen(yuan: number): number {
+   180→  return Math.round(yuan * 100);
+   181→}
+   182→
+   183→function percentToBps(pct: number): number {
+   184→  return Math.round(pct * 10000);
+   185→}
+   186→
+   187→// ─── Query Keys ───────────────────────────────────────────────────────────────
+   188→
+   189→const QK = {
+   190→  strategyVersions: ['strategy-versions'] as const,
+   191→  etfConfigs: ['etf-configs'] as const,
+   192→  systemConfigs: ['system-configs'] as const,
+   193→  ruleConfigs: ['rule-configs'] as const,
+   194→  cashAccounts: ['cash-accounts'] as const,
+   195→};
+   196→
+   197→// ─── Section 1: Strategy Version Management ───────────────────────────────────
+   198→
+   199→function StrategyVersionSection() {
+   200→  const queryClient = useQueryClient();
+   201→  const [createOpen, setCreateOpen] = useState(false);
+   202→  const [activateTarget, setActivateTarget] = useState<StrategyVersionDisplay | null>(null);
+   203→
+   204→  // Form state
+   205→  const [newVersion, setNewVersion] = useState('');
+   206→  const [newReason, setNewReason] = useState('');
+   207→  const [newParams, setNewParams] = useState('');
+   208→
+   209→  const { data: versionsRes, isLoading } = useQuery({
+   210→    queryKey: QK.strategyVersions,
+   211→    queryFn: () => fetch('/api/strategy-versions').then(r => r.json()) as Promise<ApiResponse<StrategyVersionDisplay[]>>,
+   212→  });
+   213→
+   214→  const versions = versionsRes?.data ?? [];
+   215→
+   216→  const activeVersion = useMemo(() => versions.find(v => v.status === 'active'), [versions]);
+   217→
+   218→  const createMutation = useMutation({
+   219→    mutationFn: async (body: { version: string; parameters: Record<string, unknown>; createdReason?: string }) => {
+   220→      const res = await fetch('/api/strategy-versions', {
+   221→        method: 'POST',
+   222→        headers: { 'Content-Type': 'application/json' },
+   223→        body: JSON.stringify(body),
+   224→      });
+   225→      return res.json() as Promise<ApiResponse>;
+   226→    },
+   227→    onSuccess: (res) => {
+   228→      if (res.success) {
+   229→        toast.success('策略版本已创建为草稿');
+   230→        setCreateOpen(false);
+   231→        setNewVersion('');
+   232→        setNewReason('');
+   233→        setNewParams('');
+   234→        queryClient.invalidateQueries({ queryKey: QK.strategyVersions });
+   235→      } else {
+   236→        toast.error(res.error ?? '创建失败');
+   237→      }
+   238→    },
+   239→    onError: () => toast.error('创建策略版本失败'),
+   240→  });
+   241→
+   242→  const activateMutation = useMutation({
+   243→    mutationFn: async (id: string) => {
+   244→      const res = await fetch('/api/strategy-versions/activate', {
+   245→        method: 'POST',
+   246→        headers: { 'Content-Type': 'application/json' },
+   247→        body: JSON.stringify({ id }),
+   248→      });
+   249→      return res.json() as Promise<ApiResponse>;
+   250→    },
+   251→    onSuccess: (res) => {
+   252→      if (res.success) {
+   253→        toast.success('策略版本已激活，旧版本已退役');
+   254→        setActivateTarget(null);
+   255→        queryClient.invalidateQueries({ queryKey: QK.strategyVersions });
+   256→      } else {
+   257→        toast.error(res.error ?? '激活失败');
+   258→      }
+   259→    },
+   260→    onError: () => toast.error('激活策略版本失败'),
+   261→  });
+   262→
+   263→  const handleOpenCreate = () => {
+   264→    if (activeVersion) {
+   265→      setNewParams(JSON.stringify(activeVersion.parameters, null, 2));
+   266→    } else {
+   267→      setNewParams('{}');
+   268→    }
+   269→    setCreateOpen(true);
+   270→  };
+   271→
+   272→  const handleCreate = () => {
+   273→    if (!newVersion.trim()) { toast.error('请输入版本名称'); return; }
+   274→    let params: Record<string, unknown>;
+   275→    try {
+   276→      params = JSON.parse(newParams);
+   277→    } catch {
+   278→      toast.error('参数 JSON 格式无效');
+   279→      return;
+   280→    }
+   281→    createMutation.mutate({ version: newVersion.trim(), parameters: params, createdReason: newReason.trim() || undefined });
+   282→  };
+   283→
+   284→  // Target ratios for bar chart
+   285→  const targetRatios = useMemo(() => {
+   286→    if (!activeVersion?.parameters?.target_ratios) return [];
+   287→    const ratios = activeVersion.parameters.target_ratios as Record<string, number>;
+   288→    return Object.entries(ratios).map(([code, ratio]) => ({
+   289→      code,
+   290→      bps: Math.round(ratio * 10000),
+   291→      percent: ratio * 100,
+   292→    })).sort((a, b) => b.bps - a.bps);
+   293→  }, [activeVersion]);
+   294→
+   295→  if (isLoading) {
+   296→    return (
+   297→      <Card>
+   298→        <CardHeader>
+   299→          <CardTitle>策略版本与目标配置</CardTitle>
+   300→          <CardDescription>管理策略版本，配置目标配比，激活或退役版本</CardDescription>
+   301→        </CardHeader>
+   302→        <CardContent className="space-y-4">
+   303→          <Skeleton className="h-32 w-full" />
+   304→          <Skeleton className="h-8 w-48" />
+   305→          <Skeleton className="h-64 w-full" />
+   306→        </CardContent>
+   307→      </Card>
+   308→    );
+   309→  }
+   310→
+   311→  return (
+   312→    <Card>
+   313→      <CardHeader>
+   314→        <CardTitle className="flex items-center gap-2">
+   315→          <GitBranch className="size-5 text-emerald-600" />
+   316→          策略版本与目标配置
+   317→        </CardTitle>
+   318→        <CardDescription>管理策略版本，配置目标配比，激活或退役版本</CardDescription>
+   319→      </CardHeader>
+   320→      <CardContent className="space-y-6">
+   321→        {/* Active Version */}
+   322→        {activeVersion && (
+   323→          <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-4 dark:border-emerald-900 dark:bg-emerald-950/20">
+   324→            <div className="flex flex-wrap items-center gap-3 mb-3">
+   325→              <span className="text-lg font-bold">{activeVersion.version}</span>
+   326→              <Badge className={STATUS_STYLES[activeVersion.status]}>{STATUS_LABELS[activeVersion.status]}</Badge>
+   327→              <span className="text-sm text-muted-foreground">生效于 {formatDateTime(activeVersion.effectiveAt)}</span>
+   328→            </div>
+   329→
+   330→            {/* Target Ratios Bar Chart */}
+   331→            {targetRatios.length > 0 && (
+   332→              <div className="space-y-2">
+   333→                <p className="text-sm font-medium text-muted-foreground">目标配比</p>
+   334→                <div className="flex h-8 w-full overflow-hidden rounded-md">
+   335→                  {targetRatios.map((r) => (
+   336→                    <div
+   337→                      key={r.code}
+   338→                      className={`${ETF_BAR_COLORS[r.code] ?? 'bg-gray-400'} flex items-center justify-center text-[10px] font-bold text-white transition-all`}
+   339→                      style={{ width: `${r.percent}%` }}
+   340→                      title={`${r.code}: ${r.percent.toFixed(1)}%`}
+   341→                    >
+   342→                      {r.percent >= 8 ? `${r.code} ${r.percent.toFixed(1)}%` : ''}
+   343→                    </div>
+   344→                  ))}
+   345→                </div>
+   346→                <div className="flex flex-wrap gap-x-4 gap-y-1">
+   347→                  {targetRatios.map((r) => (
+   348→                    <div key={r.code} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+   349→                      <span className={`inline-block size-2.5 rounded-sm ${ETF_BAR_COLORS[r.code] ?? 'bg-gray-400'}`} />
+   350→                      {r.code} {r.percent.toFixed(1)}%
+   351→                    </div>
+   352→                  ))}
+   353→                </div>
+   354→              </div>
+   355→            )}
+   356→          </div>
+   357→        )}
+   358→
+   359→        {!activeVersion && (
+   360→          <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 text-center text-sm text-amber-700 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-400">
+   361→            <AlertTriangle className="mx-auto mb-1 size-5" />
+   362→            暂无活跃策略版本，请创建并激活一个版本
+   363→          </div>
+   364→        )}
+   365→
+   366→        <Separator />
+   367→
+   368→        {/* Version Table */}
+   369→        <div>
+   370→          <div className="flex items-center justify-between mb-3">
+   371→            <h3 className="text-sm font-semibold">版本列表</h3>
+   372→            <Button size="sm" className="gap-1.5" onClick={handleOpenCreate}>
+   373→              <Plus className="size-3.5" /> 创建新版本
+   374→            </Button>
+   375→          </div>
+   376→          <ScrollArea className="max-h-72">
+   377→            <Table>
+   378→              <TableHeader>
+   379→                <TableRow>
+   380→                  <TableHead className="w-[120px]">版本</TableHead>
+   381→                  <TableHead className="w-[80px]">状态</TableHead>
+   382→                  <TableHead>生效时间</TableHead>
+   383→                  <TableHead>创建原因</TableHead>
+   384→                  <TableHead className="w-[100px] text-right">操作</TableHead>
+   385→                </TableRow>
+   386→              </TableHeader>
+   387→              <TableBody>
+   388→                {versions.length === 0 && (
+   389→                  <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">暂无策略版本</TableCell></TableRow>
+   390→                )}
+   391→                {versions.map((v) => (
+   392→                  <TableRow key={v.id}>
+   393→                    <TableCell className="font-medium">{v.version}</TableCell>
+   394→                    <TableCell>
+   395→                      <Badge variant="outline" className={STATUS_STYLES[v.status]}>{STATUS_LABELS[v.status]}</Badge>
+   396→                    </TableCell>
+   397→                    <TableCell className="text-muted-foreground text-sm">{formatDateTime(v.effectiveAt)}</TableCell>
+   398→                    <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">{v.createdReason || '—'}</TableCell>
+   399→                    <TableCell className="text-right">
+   400→                      {v.status === 'draft' && (
+   401→                        <Button size="sm" variant="outline" className="gap-1 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
+   402→                          onClick={() => setActivateTarget(v)}>
+   403→                          <Play className="size-3" /> 激活
+   404→                        </Button>
+   405→                      )}
+   406→                      {v.status === 'active' && (
+   407→                        <Badge variant="outline" className="text-emerald-600"><CheckCircle2 className="mr-1 size-3" />当前</Badge>
+   408→                      )}
+   409→                      {v.status === 'retired' && (
+   410→                        <span className="text-xs text-muted-foreground">已退役</span>
+   411→                      )}
+   412→                    </TableCell>
+   413→                  </TableRow>
+   414→                ))}
+   415→              </TableBody>
+   416→            </Table>
+   417→          </ScrollArea>
+   418→        </div>
+   419→
+   420→        {/* Create Dialog */}
+   421→        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+   422→          <DialogContent className="max-w-lg">
+   423→            <DialogHeader>
+   424→              <DialogTitle>创建新策略版本</DialogTitle>
+   425→              <DialogDescription>新版本将以草稿状态创建。参数将基于当前活跃版本。</DialogDescription>
+   426→            </DialogHeader>
+   427→            <div className="space-y-4">
+   428→              <div className="space-y-2">
+   429→                <Label>版本名称</Label>
+   430→                <Input value={newVersion} onChange={e => setNewVersion(e.target.value)} placeholder="例如: v2.3" />
+   431→              </div>
+   432→              <div className="space-y-2">
+   433→                <Label>创建原因</Label>
+   434→                <Textarea value={newReason} onChange={e => setNewReason(e.target.value)} placeholder="描述为什么创建此版本..." rows={2} />
+   435→              </div>
+   436→              <div className="space-y-2">
+   437→                <Label>策略参数 (JSON)</Label>
+   438→                <Textarea value={newParams} onChange={e => setNewParams(e.target.value)} rows={8} className="font-mono text-xs" />
+   439→                <p className="text-xs text-muted-foreground">target_ratios 中的值为万分比 (bps)，总和必须等于 1000000</p>
+   440→              </div>
+   441→            </div>
+   442→            <DialogFooter>
+   443→              <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
+   444→              <Button onClick={handleCreate} disabled={createMutation.isPending}>
+   445→                {createMutation.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
+   446→                创建草稿
+   447→              </Button>
+   448→            </DialogFooter>
+   449→          </DialogContent>
+   450→        </Dialog>
+   451→
+   452→        {/* Activate Confirmation */}
+   453→        <AlertDialog open={!!activateTarget} onOpenChange={(open) => !open && setActivateTarget(null)}>
+   454→          <AlertDialogContent>
+   455→            <AlertDialogHeader>
+   456→              <AlertDialogTitle>确认激活策略版本</AlertDialogTitle>
+   457→              <AlertDialogDescription>
+   458→                激活版本 <strong>{activateTarget?.version}</strong> 将退役当前活跃版本。
+   459→                此操作将立即生效，请确认目标配比总和为 100%。
+   460→              </AlertDialogDescription>
+   461→            </AlertDialogHeader>
+   462→            <AlertDialogFooter>
+   463→              <AlertDialogCancel>取消</AlertDialogCancel>
+   464→              <AlertDialogAction
+   465→                className="bg-emerald-600 hover:bg-emerald-700"
+   466→                onClick={() => activateTarget && activateMutation.mutate(activateTarget.id)}
+   467→                disabled={activateMutation.isPending}
+   468→              >
+   469→                {activateMutation.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
+   470→                确认激活
+   471→              </AlertDialogAction>
+   472→            </AlertDialogFooter>
+   473→          </AlertDialogContent>
+   474→        </AlertDialog>
+   475→      </CardContent>
+   476→    </Card>
+   477→  );
+   478→}
+   479→
+   480→// ─── Section 2: ETF Configuration ────────────────────────────────────────────
+   481→
+   482→function EtfConfigSection() {
+   483→  const queryClient = useQueryClient();
+   484→  const [addOpen, setAddOpen] = useState(false);
+   485→  const [editTarget, setEditTarget] = useState<EtfConfigWithSnapshot | null>(null);
+   486→  const [deleteTarget, setDeleteTarget] = useState<EtfConfigWithSnapshot | null>(null);
+   487→
+   488→  // Add form
+   489→  const [addForm, setAddForm] = useState({ code: '', name: '', category: 'A股宽基', targetRatioPercent: '' });
+   490→  // Edit form
+   491→  const [editForm, setEditForm] = useState({ id: '', code: '', name: '', category: '', targetRatioPercent: '' });
+   492→
+   493→  const { data: configsRes, isLoading } = useQuery({
+   494→    queryKey: QK.etfConfigs,
+   495→    queryFn: () => fetch('/api/etf-configs').then(r => r.json()) as Promise<ApiResponse<EtfConfigWithSnapshot[]>>,
+   496→  });
+   497→
+   498→  const configs = configsRes?.data ?? [];
+   499→
+   500→  const totalRatio = useMemo(() => configs.reduce((s, c) => s + (c.targetRatioPercent ?? 0), 0), [configs]);
+   501→
+   502→  const addMutation = useMutation({
+   503→    mutationFn: async (body: { code: string; name: string; category: string; targetRatioBps: number }) => {
+   504→      const res = await fetch('/api/etf-configs', {
+   505→        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+   506→      });
+   507→      return res.json() as Promise<ApiResponse>;
+   508→    },
+   509→    onSuccess: (res) => {
+   510→      if (res.success) { toast.success('ETF 已添加'); setAddOpen(false); setAddForm({ code: '', name: '', category: 'A股宽基', targetRatioPercent: '' }); queryClient.invalidateQueries({ queryKey: QK.etfConfigs }); }
+   511→      else toast.error(res.error ?? '添加失败');
+   512→    },
+   513→    onError: () => toast.error('添加 ETF 失败'),
+   514→  });
+   515→
+   516→  const editMutation = useMutation({
+   517→    mutationFn: async (body: { id: string; name?: string; category?: string; targetRatioBps?: number }) => {
+   518→      const res = await fetch('/api/etf-configs', {
+   519→        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+   520→      });
+   521→      return res.json() as Promise<ApiResponse>;
+   522→    },
+   523→    onSuccess: (res) => {
+   524→      if (res.success) { toast.success('ETF 已更新'); setEditTarget(null); queryClient.invalidateQueries({ queryKey: QK.etfConfigs }); }
+   525→      else toast.error(res.error ?? '更新失败');
+   526→    },
+   527→    onError: () => toast.error('更新 ETF 失败'),
+   528→  });
+   529→
+   530→  const deleteMutation = useMutation({
+   531→    mutationFn: async (id: string) => {
+   532→      const res = await fetch(`/api/etf-configs?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+   533→      return res.json() as Promise<ApiResponse>;
+   534→    },
+   535→    onSuccess: (res) => {
+   536→      if (res.success) { toast.success('ETF 已删除'); setDeleteTarget(null); queryClient.invalidateQueries({ queryKey: QK.etfConfigs }); }
+   537→      else toast.error(res.error ?? '删除失败');
+   538→    },
+   539→    onError: () => toast.error('删除 ETF 失败'),
+   540→  });
+   541→
+   542→  const handleAdd = () => {
+   543→    if (!addForm.code.trim() || !addForm.name.trim()) { toast.error('请填写代码和名称'); return; }
+   544→    const pct = parseFloat(addForm.targetRatioPercent);
+   545→    if (isNaN(pct) || pct < 0 || pct > 100) { toast.error('目标比例需在 0-100 之间'); return; }
+   546→    addMutation.mutate({ code: addForm.code.trim(), name: addForm.name.trim(), category: addForm.category, targetRatioBps: percentToBps(pct) });
+   547→  };
+   548→
+   549→  const handleEdit = () => {
+   550→    if (!editForm.name.trim()) { toast.error('请填写名称'); return; }
+   551→    const pct = parseFloat(editForm.targetRatioPercent);
+   552→    if (isNaN(pct) || pct < 0 || pct > 100) { toast.error('目标比例需在 0-100 之间'); return; }
+   553→    editMutation.mutate({ id: editForm.id, name: editForm.name.trim(), category: editForm.category, targetRatioBps: percentToBps(pct) });
+   554→  };
+   555→
+   556→  const openEdit = (c: EtfConfigWithSnapshot) => {
+   557→    setEditForm({ id: c.id, code: c.code, name: c.name, category: c.category, targetRatioPercent: String(c.targetRatioPercent ?? 0) });
+   558→    setEditTarget(c);
+   559→  };
+   560→
+   561→  if (isLoading) {
+   562→    return (
+   563→      <Card>
+   564→        <CardHeader><CardTitle>ETF 核心配置</CardTitle><CardDescription>配置投资标的、目标比例和分类</CardDescription></CardHeader>
+   565→        <CardContent><Skeleton className="h-64 w-full" /></CardContent>
+   566→      </Card>
+   567→    );
+   568→  }
+   569→
+   570→  return (
+   571→    <Card>
+   572→      <CardHeader>
+   573→        <CardTitle className="flex items-center gap-2">
+   574→          <Landmark className="size-5 text-teal-600" />
+   575→          ETF 核心配置
+   576→        </CardTitle>
+   577→        <CardDescription>配置投资标的、目标比例和分类</CardDescription>
+   578→      </CardHeader>
+   579→      <CardContent className="space-y-4">
+   580→        {/* Ratio Sum Warning */}
+   581→        <div className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm ${Math.abs(totalRatio - 100) < 0.01 ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400'}`}>
+   582→          {Math.abs(totalRatio - 100) < 0.01 ? <CheckCircle2 className="size-4" /> : <AlertTriangle className="size-4" />}
+   583→          目标比例总和: <strong>{totalRatio.toFixed(2)}%</strong>
+   584→          {Math.abs(totalRatio - 100) >= 0.01 && ' (需等于 100%)'}
+   585→        </div>
+   586→
+   587→        <div className="flex items-center justify-between">
+   588→          <h3 className="text-sm font-semibold">ETF 列表</h3>
+   589→          <Button size="sm" className="gap-1.5" onClick={() => setAddOpen(true)}>
+   590→            <Plus className="size-3.5" /> 添加 ETF
+   591→          </Button>
+   592→        </div>
+   593→
+   594→        <ScrollArea className="max-h-80">
+   595→          <Table>
+   596→            <TableHeader>
+   597→              <TableRow>
+   598→                <TableHead>代码</TableHead>
+   599→                <TableHead>名称</TableHead>
+   600→                <TableHead className="w-[100px]">类别</TableHead>
+   601→                <TableHead className="w-[100px] text-right">目标比例</TableHead>
+   602→                <TableHead className="text-right">当前持仓</TableHead>
+   603→                <TableHead className="w-[100px] text-right">操作</TableHead>
+   604→              </TableRow>
+   605→            </TableHeader>
+   606→            <TableBody>
+   607→              {configs.map((c) => (
+   608→                <TableRow key={c.id}>
+   609→                  <TableCell className="font-mono font-medium">{c.code}</TableCell>
+   610→                  <TableCell>{c.name}</TableCell>
+   611→                  <TableCell>
+   612→                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${CATEGORY_COLORS[c.category] ?? 'bg-gray-100 text-gray-600'}`}>
+   613→                      {c.category}
+   614→                    </span>
+   615→                  </TableCell>
+   616→                  <TableCell className="text-right font-mono">{(c.targetRatioPercent ?? 0).toFixed(2)}%</TableCell>
+   617→                  <TableCell className="text-right font-mono">
+   618→                    {c.latestSnapshot ? formatMoney(c.latestSnapshot.marketValueYuan) : '—'}
+   619→                  </TableCell>
+   620→                  <TableCell className="text-right">
+   621→                    <div className="flex items-center justify-end gap-1">
+   622→                      <Button size="sm" variant="ghost" className="size-7 p-0" onClick={() => openEdit(c)}>
+   623→                        <Pencil className="size-3.5" />
+   624→                      </Button>
+   625→                      <Button size="sm" variant="ghost" className="size-7 p-0 text-red-500 hover:text-red-600" onClick={() => setDeleteTarget(c)}>
+   626→                        <Trash2 className="size-3.5" />
+   627→                      </Button>
+   628→                    </div>
+   629→                  </TableCell>
+   630→                </TableRow>
+   631→              ))}
+   632→              {configs.length === 0 && (
+   633→                <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">暂无 ETF 配置</TableCell></TableRow>
+   634→              )}
+   635→            </TableBody>
+   636→          </Table>
+   637→        </ScrollArea>
+   638→
+   639→        {/* Add Dialog */}
+   640→        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+   641→          <DialogContent className="max-w-md">
+   642→            <DialogHeader><DialogTitle>添加 ETF</DialogTitle><DialogDescription>添加新的投资标的到策略配置</DialogDescription></DialogHeader>
+   643→            <div className="space-y-4">
+   644→              <div className="space-y-2"><Label>ETF 代码</Label><Input value={addForm.code} onChange={e => setAddForm(f => ({ ...f, code: e.target.value }))} placeholder="510300" /></div>
+   645→              <div className="space-y-2"><Label>名称</Label><Input value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} placeholder="沪深300ETF" /></div>
+   646→              <div className="space-y-2">
+   647→                <Label>类别</Label>
+   648→                <Select value={addForm.category} onValueChange={v => setAddForm(f => ({ ...f, category: v }))}>
+   649→                  <SelectTrigger><SelectValue /></SelectTrigger>
+   650→                  <SelectContent>
+   651→                    <SelectItem value="A股宽基">A股宽基</SelectItem>
+   652→                    <SelectItem value="红利">红利</SelectItem>
+   653→                    <SelectItem value="QDII">QDII</SelectItem>
+   654→                  </SelectContent>
+   655→                </Select>
+   656→              </div>
+   657→              <div className="space-y-2"><Label>目标比例 (%)</Label><Input type="number" step="0.01" value={addForm.targetRatioPercent} onChange={e => setAddForm(f => ({ ...f, targetRatioPercent: e.target.value }))} placeholder="16.67" /></div>
+   658→            </div>
+   659→            <DialogFooter>
+   660→              <Button variant="outline" onClick={() => setAddOpen(false)}>取消</Button>
+   661→              <Button onClick={handleAdd} disabled={addMutation.isPending}>
+   662→                {addMutation.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />} 添加
+   663→              </Button>
+   664→            </DialogFooter>
+   665→          </DialogContent>
+   666→        </Dialog>
+   667→
+   668→        {/* Edit Dialog */}
+   669→        <Dialog open={!!editTarget} onOpenChange={(open) => !open && setEditTarget(null)}>
+   670→          <DialogContent className="max-w-md">
+   671→            <DialogHeader><DialogTitle>编辑 ETF — {editTarget?.code}</DialogTitle><DialogDescription>修改 ETF 配置信息</DialogDescription></DialogHeader>
+   672→            <div className="space-y-4">
+   673→              <div className="space-y-2"><Label>ETF 代码</Label><Input value={editForm.code} disabled /></div>
+   674→              <div className="space-y-2"><Label>名称</Label><Input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} /></div>
+   675→              <div className="space-y-2">
+   676→                <Label>类别</Label>
+   677→                <Select value={editForm.category} onValueChange={v => setEditForm(f => ({ ...f, category: v }))}>
+   678→                  <SelectTrigger><SelectValue /></SelectTrigger>
+   679→                  <SelectContent>
+   680→                    <SelectItem value="A股宽基">A股宽基</SelectItem>
+   681→                    <SelectItem value="红利">红利</SelectItem>
+   682→                    <SelectItem value="QDII">QDII</SelectItem>
+   683→                  </SelectContent>
+   684→                </Select>
+   685→              </div>
+   686→              <div className="space-y-2"><Label>目标比例 (%)</Label><Input type="number" step="0.01" value={editForm.targetRatioPercent} onChange={e => setEditForm(f => ({ ...f, targetRatioPercent: e.target.value }))} /></div>
+   687→            </div>
+   688→            <DialogFooter>
+   689→              <Button variant="outline" onClick={() => setEditTarget(null)}>取消</Button>
+   690→              <Button onClick={handleEdit} disabled={editMutation.isPending}>
+   691→                {editMutation.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />} 保存
+   692→              </Button>
+   693→            </DialogFooter>
+   694→          </DialogContent>
+   695→        </Dialog>
+   696→
+   697→        {/* Delete Confirmation */}
+   698→        <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+   699→          <AlertDialogContent>
+   700→            <AlertDialogHeader>
+   701→              <AlertDialogTitle>确认删除 ETF</AlertDialogTitle>
+   702→              <AlertDialogDescription>确定要删除 <strong>{deleteTarget?.code} ({deleteTarget?.name})</strong> 吗？此操作不可撤销。</AlertDialogDescription>
+   703→            </AlertDialogHeader>
+   704→            <AlertDialogFooter>
+   705→              <AlertDialogCancel>取消</AlertDialogCancel>
+   706→              <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)} disabled={deleteMutation.isPending}>
+   707→                {deleteMutation.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />} 删除
+   708→              </AlertDialogAction>
+   709→            </AlertDialogFooter>
+   710→          </AlertDialogContent>
+   711→        </AlertDialog>
+   712→      </CardContent>
+   713→    </Card>
+   714→  );
+   715→}
+   716→
+   717→// ─── Section 3: Weekly Budget ─────────────────────────────────────────────────
+   718→
+   719→function WeeklyBudgetSection() {
+   720→  const queryClient = useQueryClient();
+   721→
+   722→  const { data: sysRes, isLoading: sysLoading } = useQuery({
+   723→    queryKey: QK.systemConfigs,
+   724→    queryFn: () => fetch('/api/system-configs').then(r => r.json()) as Promise<ApiResponse<SystemConfigMap>>,
+   725→  });
+   726→
+   727→  const { data: cashRes, isLoading: cashLoading } = useQuery({
+   728→    queryKey: QK.cashAccounts,
+   729→    queryFn: () => fetch('/api/cash-accounts').then(r => r.json()) as Promise<ApiResponse<CashAccountDisplay[]>>,
+   730→  });
+   731→
+   732→  const configs = sysRes?.data ?? {};
+   733→  const accounts = cashRes?.data ?? [];
+   734→
+   735→  const [localConfigs, setLocalConfigs] = useState<Record<string, string>>({});
+   736→  const [isEditing, setIsEditing] = useState(false);
+   737→
+   738→  const budgetFields = [
+   739→    { key: 'weekly_contribution_committed', label: '本周注资', desc: '本周承诺投入的资金（元，来自现金子账户）', type: 'number', isCashAccount: true },
+   740→    { key: 'weekly_budget', label: '策略周预算', desc: '本周策略引擎使用的预算（元）', type: 'number' },
+   741→    { key: 'base_bucket_ratio', label: '基础仓比例', desc: '基础仓分配比例（万分比 bps）', type: 'number' },
+   742→    { key: 'value_bucket_ratio', label: '增强仓比例', desc: '增强仓分配比例（万分比 bps）', type: 'number' },
+   743→  ];
+   744→
+   745→  // Helper: render budget field value with fallback for missing keys
+   746→  const committedCashBalance = accounts.find(a => a.accountType === 'weekly_contribution_committed')?.balanceYuan ?? null;
+   747→  const renderBudgetFieldValue = (f: typeof budgetFields[number]) => {
+   748→    // Cash account field: read from cash account balance
+   749→    if ('isCashAccount' in f && f.isCashAccount) {
+   750→      return committedCashBalance != null ? formatMoney(committedCashBalance) : '—';
+   751→    }
+   752→    const raw = configs[f.key];
+   753→    if (raw === undefined || raw === '') return '—';
+   754→    if (f.key.includes('ratio')) return `${raw} bps`;
+   755→    const num = Number(raw);
+   756→    return isNaN(num) ? '—' : formatMoney(num / 100);
+   757→  };
+   758→
+   759→  // Initialize local configs when data loads
+   760→  const handleStartEdit = () => {
+   761→    const initial: Record<string, string> = {};
+   762→    budgetFields.forEach(f => {
+   763→      if ('isCashAccount' in f && f.isCashAccount) {
+   764→        // Cash account field: not editable via system-configs, skip
+   765→        initial[f.key] = String(committedCashBalance ?? '');
+   766→      } else {
+   767→        initial[f.key] = configs[f.key] ?? '';
+   768→      }
+   769→    });
+   770→    setLocalConfigs(initial);
+   771→    setIsEditing(true);
+   772→  };
+   773→
+   774→  const updateMutation = useMutation({
+   775→    mutationFn: async (updates: Array<{ configKey: string; configValue: string }>) => {
+   776→      await Promise.all(updates.map(u =>
+   777→        fetch('/api/system-configs', {
+   778→          method: 'PUT',
+   779→          headers: { 'Content-Type': 'application/json' },
+   780→          body: JSON.stringify(u),
+   781→        })
+   782→      ));
+   783→    },
+   784→    onSuccess: () => {
+   785→      toast.success('周预算配置已保存');
+   786→      setIsEditing(false);
+   787→      queryClient.invalidateQueries({ queryKey: QK.systemConfigs });
+   788→    },
+   789→    onError: () => toast.error('保存失败'),
+   790→  });
+   791→
+   792→  const handleSave = () => {
+   793→    const updates = budgetFields
+   794→      .filter(f => !('isCashAccount' in f && f.isCashAccount)) // skip cash account fields
+   795→      .filter(f => localConfigs[f.key] !== undefined && localConfigs[f.key] !== '')
+   796→      .map(f => ({ configKey: f.key, configValue: localConfigs[f.key] }));
+   797→    updateMutation.mutate(updates);
+   798→  };
+   799→
+   800→  const canEditField = (f: typeof budgetFields[number]) => {
+   801→    return !('isCashAccount' in f && f.isCashAccount);
+   802→  };
+   803→
+   804→  // EAB calculation
+   805→  /* eslint-disable react-hooks/preserve-manual-memoization */
+   806→  const eabBreakdown = useMemo(() => {
+   807→    const investEquity = accounts.find(a => a.accountType === 'weekly_unallocated_cash')?.balanceYuan ?? 0;
+   808→    const unallocatedCash = accounts.find(a => a.accountType === 'weekly_unallocated_cash')?.balanceYuan ?? 0;
+   809→    const qdiiSp500 = accounts.find(a => a.accountType === 'qdii_pending_cash_sp500')?.balanceYuan ?? 0;
+   810→    const qdiiNasdaq = accounts.find(a => a.accountType === 'qdii_pending_cash_nasdaq')?.balanceYuan ?? 0;
+   811→    const reserve = accounts.find(a => a.accountType === 'rebalance_equity_reserve')?.balanceYuan ?? 0;
+   812→    // Also consider committed contribution
+   813→    const committed = accounts.find(a => a.accountType === 'weekly_contribution_committed')?.balanceYuan ?? 0;
+   814→    return {
+   815→      investEquity,
+   816→      unallocatedCash,
+   817→      qdiiPending: (qdiiSp500 ?? 0) + (qdiiNasdaq ?? 0),
+   818→      reserve: reserve ?? 0,
+   819→      committed: committed ?? 0,
+   820→    };
+   821→  }, [accounts]);
+   822→  /* eslint-enable react-hooks/preserve-manual-memoization */
+   823→
+   824→  const totalEAB = (eabBreakdown.investEquity ?? 0) + (eabBreakdown.unallocatedCash ?? 0) + (eabBreakdown.qdiiPending ?? 0) + (eabBreakdown.reserve ?? 0);
+   825→
+   826→  if (sysLoading || cashLoading) {
+   827→    return (
+   828→      <Card>
+   829→        <CardHeader><CardTitle>周预算与默认值</CardTitle><CardDescription>配置每周注资金额和分配比例</CardDescription></CardHeader>
+   830→        <CardContent><Skeleton className="h-48 w-full" /></CardContent>
+   831→      </Card>
+   832→    );
+   833→  }
+   834→
+   835→  return (
+   836→    <Card>
+   837→      <CardHeader>
+   838→        <CardTitle className="flex items-center gap-2">
+   839→          <Wallet className="size-5 text-amber-600" />
+   840→          周预算与默认值
+   841→        </CardTitle>
+   842→        <CardDescription>配置每周注资金额和分配比例</CardDescription>
+   843→      </CardHeader>
+   844→      <CardContent className="space-y-6">
+   845→        {/* Budget Fields */}
+   846→        <div className="grid gap-4 sm:grid-cols-2">
+   847→          {budgetFields.map((f) => (
+   848→            <div key={f.key} className="space-y-1.5">
+   849→              <Label className="text-sm font-medium">{f.label}</Label>
+   850→              {isEditing && canEditField(f) ? (
+   851→                <Input
+   852→                  type={f.type}
+   853→                  value={localConfigs[f.key] ?? ''}
+   854→                  onChange={e => setLocalConfigs(prev => ({ ...prev, [f.key]: e.target.value }))}
+   855→                />
+   856→              ) : (
+   857→                <p className="text-sm font-mono bg-muted rounded-md px-3 py-2">
+   858→                  {renderBudgetFieldValue(f)}
+   859→                  {isEditing && !canEditField(f) && <span className="ml-2 text-[10px] text-muted-foreground/60">只读</span>}
+   860→                </p>
+   861→              )}
+   862→              <p className="text-xs text-muted-foreground">{f.desc}</p>
+   863→            </div>
+   864→          ))}
+   865→        </div>
+   866→
+   867→        <div className="flex gap-2">
+   868→          {!isEditing ? (
+   869→            <Button size="sm" variant="outline" className="gap-1.5" onClick={handleStartEdit}>
+   870→              <Pencil className="size-3.5" /> 编辑
+   871→            </Button>
+   872→          ) : (
+   873→            <>
+   874→              <Button size="sm" className="gap-1.5" onClick={handleSave} disabled={updateMutation.isPending}>
+   875→                {updateMutation.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />} 保存
+   876→              </Button>
+   877→              <Button size="sm" variant="outline" onClick={() => setIsEditing(false)}>取消</Button>
+   878→            </>
+   879→          )}
+   880→        </div>
+   881→
+   882→        <Separator />
+   883→
+   884→        {/* EAB Preview */}
+   885→        <div>
+   886→          <h3 className="text-sm font-semibold mb-3">EAB 预览（权益配置基准）</h3>
+   887→          <div className="rounded-lg border bg-muted/30 p-4">
+   888→            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 text-sm">
+   889→              <div className="flex justify-between"><span className="text-muted-foreground">未分配权益现金</span><span className="font-mono">{formatMoney(eabBreakdown.unallocatedCash)}</span></div>
+   890→              <div className="flex justify-between"><span className="text-muted-foreground">QDII 挂起资金</span><span className="font-mono">{formatMoney(eabBreakdown.qdiiPending)}</span></div>
+   891→              <div className="flex justify-between"><span className="text-muted-foreground">再平衡备用金</span><span className="font-mono">{formatMoney(eabBreakdown.reserve)}</span></div>
+   892→            </div>
+   893→            <Separator className="my-3" />
+   894→            <div className="flex items-center justify-between">
+   895→              <span className="font-medium">EAB 合计</span>
+   896→              <span className="text-lg font-bold font-mono text-emerald-600">{formatMoney(totalEAB)}</span>
+   897→            </div>
+   898→          </div>
+   899→          <p className="mt-2 text-xs text-muted-foreground">EAB = 投资资产 + 未分配现金 + QDII挂起 + 备用金（不含日常现金和手动指定现金）</p>
+   900→        </div>
+   901→      </CardContent>
+   902→    </Card>
+   903→  );
+   904→}
+   905→
+   906→// ─── Section 4: Rule Parameters ───────────────────────────────────────────────
+   907→
+   908→function RuleParametersSection() {
+   909→  const queryClient = useQueryClient();
+   910→  const [editRule, setEditRule] = useState<RuleConfigDisplay | null>(null);
+   911→  const [editValue, setEditValue] = useState('');
+   912→
+   913→  const { data: rulesRes, isLoading } = useQuery({
+   914→    queryKey: QK.ruleConfigs,
+   915→    queryFn: () => fetch('/api/rule-configs').then(r => r.json()) as Promise<ApiResponse<RuleConfigDisplay[]>>,
+   916→  });
+   917→
+   918→  const rules = rulesRes?.data ?? [];
+   919→
+   920→  const groupedRules = useMemo(() => {
+   921→    const groups: Record<string, RuleConfigDisplay[]> = {};
+   922→    for (const rule of rules) {
+   923→      const g = rule.ruleGroup || 'other';
+   924→      if (!groups[g]) groups[g] = [];
+   925→      groups[g].push(rule);
+   926→    }
+   927→    return groups;
+   928→  }, [rules]);
+   929→
+   930→  const openGroups = useMemo(() => Object.keys(groupedRules).slice(0, 2), [groupedRules]);
+   931→
+   932→  const updateMutation = useMutation({
+   933→    mutationFn: async ({ id, ruleValue }: { id: string; ruleValue: string }) => {
+   934→      const res = await fetch('/api/rule-configs', {
+   935→        method: 'PUT',
+   936→        headers: { 'Content-Type': 'application/json' },
+   937→        body: JSON.stringify({ id, ruleValue }),
+   938→      });
+   939→      return res.json() as Promise<ApiResponse>;
+   940→    },
+   941→    onSuccess: (res) => {
+   942→      if (res.success) { toast.success('规则参数已更新'); setEditRule(null); queryClient.invalidateQueries({ queryKey: QK.ruleConfigs }); }
+   943→      else toast.error(res.error ?? '更新失败');
+   944→    },
+   945→    onError: () => toast.error('更新规则参数失败'),
+   946→  });
+   947→
+   948→  if (isLoading) {
+   949→    return (
+   950→      <Card>
+   951→        <CardHeader><CardTitle>规则参数</CardTitle><CardDescription>配置买入、暂停、再平衡和数据质量规则</CardDescription></CardHeader>
+   952→        <CardContent><Skeleton className="h-48 w-full" /></CardContent>
+   953→      </Card>
+   954→    );
+   955→  }
+   956→
+   957→  return (
+   958→    <Card>
+   959→      <CardHeader>
+   960→        <CardTitle className="flex items-center gap-2">
+   961→          <ListChecks className="size-5 text-cyan-600" />
+   962→          规则参数
+   963→        </CardTitle>
+   964→        <CardDescription>配置买入、暂停、再平衡和数据质量规则</CardDescription>
+   965→      </CardHeader>
+   966→      <CardContent className="space-y-3">
+   967→        {Object.keys(groupedRules).length === 0 && (
+   968→          <p className="text-sm text-muted-foreground py-4 text-center">暂无规则配置</p>
+   969→        )}
+   970→
+   971→        {Object.entries(groupedRules).map(([group, groupRules]) => (
+   972→          <Collapsible key={group} defaultOpen={openGroups.includes(group)}>
+   973→            <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm font-medium hover:bg-muted/50 transition-colors">
+   974→              <span className="flex items-center gap-2">
+   975→                <ChevronIcon className="size-4 text-muted-foreground" />
+   976→                {RULE_GROUP_LABELS[group] ?? group}
+   977→                <Badge variant="secondary" className="text-xs">{groupRules.length}</Badge>
+   978→              </span>
+   979→            </CollapsibleTrigger>
+   980→            <CollapsibleContent>
+   981→              <div className="ml-4 mt-1 space-y-2 border-l-2 border-muted pl-4">
+   982→                {groupRules.map((rule) => (
+   983→                  <div key={rule.id} className="flex items-start justify-between gap-3 rounded-md px-2 py-1.5 hover:bg-muted/30 transition-colors">
+   984→                    <div className="min-w-0 flex-1">
+   985→                      <div className="flex items-center gap-2">
+   986→                        <span className="text-sm font-medium">{rule.ruleName}</span>
+   987→                        {!rule.isEnabled && <Badge variant="outline" className="text-xs text-muted-foreground">已禁用</Badge>}
+   988→                      </div>
+   989→                      <p className="text-xs text-muted-foreground mt-0.5">{rule.description || rule.triggerCondition || ''}</p>
+   990→                    </div>
+   991→                    <div className="flex items-center gap-2 shrink-0">
+   992→                      <span className="text-sm font-mono font-medium bg-muted rounded px-2 py-0.5">{rule.ruleValue}</span>
+   993→                      <Button size="sm" variant="ghost" className="size-7 p-0" onClick={() => { setEditRule(rule); setEditValue(rule.ruleValue); }}>
+   994→                        <Pencil className="size-3.5" />
+   995→                      </Button>
+   996→                    </div>
+   997→                  </div>
+   998→                ))}
+   999→              </div>
+  1000→            </CollapsibleContent>
+  1001→          </Collapsible>
+  1002→        ))}
+  1003→
+  1004→        {/* Edit Rule Dialog */}
+  1005→        <Dialog open={!!editRule} onOpenChange={(open) => !open && setEditRule(null)}>
+  1006→          <DialogContent className="max-w-md">
+  1007→            <DialogHeader>
+  1008→              <DialogTitle>编辑规则 — {editRule?.ruleName}</DialogTitle>
+  1009→              <DialogDescription>修改规则的当前值</DialogDescription>
+  1010→            </DialogHeader>
+  1011→            <div className="space-y-4">
+  1012→              <div className="space-y-1">
+  1013→                <Label>规则名称</Label>
+  1014→                <p className="text-sm">{editRule?.ruleName}</p>
+  1015→              </div>
+  1016→              <div className="space-y-1">
+  1017→                <Label>触发条件</Label>
+  1018→                <p className="text-sm text-muted-foreground">{editRule?.triggerCondition || '—'}</p>
+  1019→              </div>
+  1020→              <div className="space-y-2">
+  1021→                <Label>当前值</Label>
+  1022→                <Input value={editValue} onChange={e => setEditValue(e.target.value)} />
+  1023→              </div>
+  1024→            </div>
+  1025→            <DialogFooter>
+  1026→              <Button variant="outline" onClick={() => setEditRule(null)}>取消</Button>
+  1027→              <Button onClick={() => editRule && updateMutation.mutate({ id: editRule.id, ruleValue: editValue })} disabled={updateMutation.isPending}>
+  1028→                {updateMutation.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />} 保存
+  1029→              </Button>
+  1030→            </DialogFooter>
+  1031→          </DialogContent>
+  1032→        </Dialog>
+  1033→      </CardContent>
+  1034→    </Card>
+  1035→  );
+  1036→}
+  1037→
+  1038→// Chevron icon for Collapsible
+  1039→function ChevronIcon({ className }: { className?: string }) {
+  1040→  return (
+  1041→    <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
+  1042→      <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
+  1043→    </svg>
+  1044→  );
+  1045→}
+  1046→
+  1047→// ─── Section 5: Cash Account Management ───────────────────────────────────────
+  1048→
+  1049→function CashAccountSection() {
+  1050→  const queryClient = useQueryClient();
+  1051→  const [transferOpen, setTransferOpen] = useState(false);
+  1052→  const [transferForm, setTransferForm] = useState({ from: '', to: '', amount: '', description: '' });
+  1053→
+  1054→  const { data: accountsRes, isLoading } = useQuery({
+  1055→    queryKey: QK.cashAccounts,
+  1056→    queryFn: () => fetch('/api/cash-accounts').then(r => r.json()) as Promise<ApiResponse<CashAccountDisplay[]>>,
+  1057→  });
+  1058→
+  1059→  const accounts = accountsRes?.data ?? [];
+  1060→
+  1061→  const totalBalance = useMemo(() => accounts.reduce((s, a) => s + (a.balanceYuan ?? 0), 0), [accounts]);
+  1062→
+  1063→  const transferMutation = useMutation({
+  1064→    mutationFn: async (body: { debitAccountType: string; creditAccountType: string; amountFen: number; description: string }) => {
+  1065→      const res = await fetch('/api/cash-ledger', {
+  1066→        method: 'POST',
+  1067→        headers: { 'Content-Type': 'application/json' },
+  1068→        body: JSON.stringify(body),
+  1069→      });
+  1070→      return res.json() as Promise<ApiResponse>;
+  1071→    },
+  1072→    onSuccess: (res) => {
+  1073→      if (res.success) {
+  1074→        toast.success('转账已记录');
+  1075→        setTransferOpen(false);
+  1076→        setTransferForm({ from: '', to: '', amount: '', description: '' });
+  1077→        queryClient.invalidateQueries({ queryKey: QK.cashAccounts });
+  1078→      } else {
+  1079→        toast.error(res.error ?? '转账失败');
+  1080→      }
+  1081→    },
+  1082→    onError: () => toast.error('转账失败'),
+  1083→  });
+  1084→
+  1085→  const handleTransfer = () => {
+  1086→    if (!transferForm.from || !transferForm.to) { toast.error('请选择转出和转入账户'); return; }
+  1087→    if (transferForm.from === transferForm.to) { toast.error('转出和转入账户不能相同'); return; }
+  1088→    const yuan = parseFloat(transferForm.amount);
+  1089→    if (isNaN(yuan) || yuan <= 0) { toast.error('请输入有效金额'); return; }
+  1090→    if (!transferForm.description.trim()) { toast.error('请输入转账说明'); return; }
+  1091→    transferMutation.mutate({
+  1092→      debitAccountType: transferForm.from,
+  1093→      creditAccountType: transferForm.to,
+  1094→      amountFen: yuanToFen(yuan),
+  1095→      description: transferForm.description.trim(),
+  1096→    });
+  1097→  };
+  1098→
+  1099→  if (isLoading) {
+  1100→    return (
+  1101→      <Card>
+  1102→        <CardHeader><CardTitle>现金账户管理</CardTitle><CardDescription>查看和管理 7 个现金子账户</CardDescription></CardHeader>
+  1103→        <CardContent><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-24 w-full" />)}</div></CardContent>
+  1104→      </Card>
+  1105→    );
+  1106→  }
+  1107→
+  1108→  return (
+  1109→    <Card>
+  1110→      <CardHeader>
+  1111→        <CardTitle className="flex items-center gap-2">
+  1112→          <Wallet className="size-5 text-fuchsia-600" />
+  1113→          现金账户管理
+  1114→        </CardTitle>
+  1115→        <CardDescription>查看和管理 7 个现金子账户</CardDescription>
+  1116→      </CardHeader>
+  1117→      <CardContent className="space-y-4">
+  1118→        {/* Total */}
+  1119→        <div className="flex items-center justify-between rounded-md bg-muted/50 px-4 py-2.5">
+  1120→          <span className="text-sm font-medium">总余额</span>
+  1121→          <span className="text-lg font-bold font-mono">{formatMoney(totalBalance)}</span>
+  1122→        </div>
+  1123→
+  1124→        {/* Account Grid */}
+  1125→        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+  1126→          {accounts.map((acc) => {
+  1127→            const bal = acc.balanceYuan ?? 0;
+  1128→            const isPositive = bal > 0;
+  1129→            return (
+  1130→              <div key={acc.id} className="rounded-lg border p-3 space-y-2 hover:shadow-sm transition-shadow">
+  1131→                <div className="flex items-center justify-between">
+  1132→                  <div className="flex items-center gap-2">
+  1133→                    <span className={`inline-block size-2.5 rounded-full ${ACCOUNT_TYPE_COLORS[acc.accountType as CashAccountType] ?? 'bg-gray-400'} ${isPositive ? '' : 'opacity-40'}`} />
+  1134→                    <span className="text-sm font-medium">{ACCOUNT_LABELS[acc.accountType as CashAccountType] ?? acc.accountType}</span>
+  1135→                  </div>
+  1136→                  {acc.countsAsEquityBase && (
+  1137→                    <Badge variant="outline" className="text-[10px] text-emerald-600 border-emerald-300">计入EAB</Badge>
+  1138→                  )}
+  1139→                </div>
+  1140→                <p className={`text-base font-mono font-semibold ${isPositive ? '' : 'text-muted-foreground'}`}>{formatMoney(bal)}</p>
+  1141→                {acc.description && <p className="text-xs text-muted-foreground">{acc.description}</p>}
+  1142→              </div>
+  1143→            );
+  1144→          })}
+  1145→        </div>
+  1146→
+  1147→        <div className="flex justify-end">
+  1148→          <Button size="sm" className="gap-1.5" onClick={() => setTransferOpen(true)}>
+  1149→            <ArrowRightLeft className="size-3.5" /> 手动转账
+  1150→          </Button>
+  1151→        </div>
+  1152→
+  1153→        {/* Transfer Dialog */}
+  1154→        <Dialog open={transferOpen} onOpenChange={setTransferOpen}>
+  1155→          <DialogContent className="max-w-md">
+  1156→            <DialogHeader><DialogTitle>手动转账</DialogTitle><DialogDescription>在两个现金子账户之间进行资金转移</DialogDescription></DialogHeader>
+  1157→            <div className="space-y-4">
+  1158→              <div className="space-y-2">
+  1159→                <Label>转出账户</Label>
+  1160→                <Select value={transferForm.from} onValueChange={v => setTransferForm(f => ({ ...f, from: v }))}>
+  1161→                  <SelectTrigger><SelectValue placeholder="选择转出账户" /></SelectTrigger>
+  1162→                  <SelectContent>
+  1163→                    {CASH_ACCOUNT_TYPES.map(t => (
+  1164→                      <SelectItem key={t} value={t}>{ACCOUNT_LABELS[t]}</SelectItem>
+  1165→                    ))}
+  1166→                  </SelectContent>
+  1167→                </Select>
+  1168→              </div>
+  1169→              <div className="space-y-2">
+  1170→                <Label>转入账户</Label>
+  1171→                <Select value={transferForm.to} onValueChange={v => setTransferForm(f => ({ ...f, to: v }))}>
+  1172→                  <SelectTrigger><SelectValue placeholder="选择转入账户" /></SelectTrigger>
+  1173→                  <SelectContent>
+  1174→                    {CASH_ACCOUNT_TYPES.map(t => (
+  1175→                      <SelectItem key={t} value={t}>{ACCOUNT_LABELS[t]}</SelectItem>
+  1176→                    ))}
+  1177→                  </SelectContent>
+  1178→                </Select>
+  1179→              </div>
+  1180→              <div className="space-y-2">
+  1181→                <Label>金额 (元)</Label>
+  1182→                <Input type="number" step="0.01" min="0" value={transferForm.amount} onChange={e => setTransferForm(f => ({ ...f, amount: e.target.value }))} placeholder="1000.00" />
+  1183→              </div>
+  1184→              <div className="space-y-2">
+  1185→                <Label>说明</Label>
+  1186→                <Input value={transferForm.description} onChange={e => setTransferForm(f => ({ ...f, description: e.target.value }))} placeholder="转账原因说明" />
+  1187→              </div>
+  1188→            </div>
+  1189→            <DialogFooter>
+  1190→              <Button variant="outline" onClick={() => setTransferOpen(false)}>取消</Button>
+  1191→              <Button onClick={handleTransfer} disabled={transferMutation.isPending}>
+  1192→                {transferMutation.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />} 确认转账
+  1193→              </Button>
+  1194→            </DialogFooter>
+  1195→          </DialogContent>
+  1196→        </Dialog>
+  1197→      </CardContent>
+  1198→    </Card>
+  1199→  );
+  1200→}
+  1201→
+  1202→// ─── Section 6: Data Source Management (Mock) ─────────────────────────────────
+  1203→
+  1204→function DataSourceSection() {
+  1205→  return (
+  1206→    <Card>
+  1207→      <CardHeader>
+  1208→        <CardTitle className="flex items-center gap-2">
+  1209→          <Database className="size-5 text-violet-600" />
+  1210→          数据源管理
+  1211→        </CardTitle>
+  1212→        <CardDescription>查看和管理数据采集源的状态与质量</CardDescription>
+  1213→      </CardHeader>
+  1214→      <CardContent>
+  1215→        <div className="space-y-2">
+  1216→          {MOCK_DATA_SOURCES.map((src, idx) => (
+  1217→            <div key={idx} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 hover:bg-muted/30 transition-colors">
+  1218→              <div className="flex items-center gap-3">
+  1219→                {src.isPrimary && (
+  1220→                  <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">主数据源</Badge>
+  1221→                )}
+  1222→                <div>
+  1223→                  <p className="text-sm font-medium">{src.name}</p>
+  1224→                  <p className="text-xs text-muted-foreground">{src.type}</p>
+  1225→                </div>
+  1226→              </div>
+  1227→              <div className="flex items-center gap-3">
+  1228→                <div className="text-right">
+  1229→                  <p className="text-xs text-muted-foreground">质量评分</p>
+  1230→                  <p className={`text-sm font-mono font-semibold ${src.quality >= 80 ? 'text-emerald-600' : src.quality >= 50 ? 'text-amber-600' : 'text-muted-foreground'}`}>
+  1231→                    {src.quality > 0 ? src.quality : '—'}
+  1232→                  </p>
+  1233→                </div>
+  1234→                <Badge variant="outline" className={
+  1235→                  src.status === 'active' ? 'text-emerald-600 border-emerald-300' :
+  1236→                  src.status === 'degraded' ? 'text-amber-600 border-amber-300' :
+  1237→                  'text-muted-foreground'
+  1238→                }>
+  1239→                  <CircleDot className={`mr-1 size-3 ${src.status === 'active' ? 'fill-emerald-500 text-emerald-500' : src.status === 'degraded' ? 'fill-amber-500 text-amber-500' : 'fill-muted text-muted'}`} />
+  1240→                  {src.status === 'active' ? '正常' : src.status === 'degraded' ? '降级' : '未启用'}
+  1241→                </Badge>
+  1242→              </div>
+  1243→            </div>
+  1244→          ))}
+  1245→        </div>
+  1246→      </CardContent>
+  1247→    </Card>
+  1248→  );
+  1249→}
+  1250→
+  1251→// ─── Section 7: System Configuration ──────────────────────────────────────────
+  1252→
+  1253→function SystemConfigSection() {
+  1254→  const queryClient = useQueryClient();
+  1255→  const [editKey, setEditKey] = useState<string | null>(null);
+  1256→  const [editValue, setEditValue] = useState('');
+  1257→
+  1258→  const { data: configsRes, isLoading } = useQuery({
+  1259→    queryKey: QK.systemConfigs,
+  1260→    queryFn: () => fetch('/api/system-configs').then(r => r.json()) as Promise<ApiResponse<SystemConfigMap>>,
+  1261→  });
+  1262→
+  1263→  const configs = configsRes?.data ?? {};
+  1264→  const entries = useMemo(() => Object.entries(configs).sort(([a], [b]) => a.localeCompare(b)), [configs]);
+  1265→
+  1266→  const updateMutation = useMutation({
+  1267→    mutationFn: async ({ configKey, configValue }: { configKey: string; configValue: string }) => {
+  1268→      const res = await fetch('/api/system-configs', {
+  1269→        method: 'PUT',
+  1270→        headers: { 'Content-Type': 'application/json' },
+  1271→        body: JSON.stringify({ configKey, configValue }),
+  1272→      });
+  1273→      return res.json() as Promise<ApiResponse>;
+  1274→    },
+  1275→    onSuccess: (res) => {
+  1276→      if (res.success) { toast.success('系统配置已更新'); setEditKey(null); queryClient.invalidateQueries({ queryKey: QK.systemConfigs }); }
+  1277→      else toast.error(res.error ?? '更新失败');
+  1278→    },
+  1279→    onError: () => toast.error('更新系统配置失败'),
+  1280→  });
+  1281→
+  1282→  const handleRefresh = () => {
+  1283→    toast.success('数据已刷新（模拟操作）');
+  1284→    queryClient.invalidateQueries({ queryKey: QK.systemConfigs });
+  1285→  };
+  1286→
+  1287→  const handleClearCache = () => {
+  1288→    toast.success('缓存已清空（模拟操作）');
+  1289→  };
+  1290→
+  1291→  if (isLoading) {
+  1292→    return (
+  1293→      <Card>
+  1294→        <CardHeader><CardTitle>系统配置</CardTitle><CardDescription>查看和修改全局系统参数</CardDescription></CardHeader>
+  1295→        <CardContent><Skeleton className="h-48 w-full" /></CardContent>
+  1296→      </Card>
+  1297→    );
+  1298→  }
+  1299→
+  1300→  return (
+  1301→    <Card>
+  1302→      <CardHeader>
+  1303→        <CardTitle className="flex items-center gap-2">
+  1304→          <Cpu className="size-5 text-stone-600" />
+  1305→          系统配置
+  1306→        </CardTitle>
+  1307→        <CardDescription>查看和修改全局系统参数</CardDescription>
+  1308→      </CardHeader>
+  1309→      <CardContent className="space-y-4">
+  1310→        <div className="flex gap-2">
+  1311→          <Button size="sm" variant="outline" className="gap-1.5" onClick={handleRefresh}>
+  1312→            <RefreshCw className="size-3.5" /> 刷新数据
+  1313→          </Button>
+  1314→          <Button size="sm" variant="outline" className="gap-1.5 text-red-600 hover:text-red-700" onClick={handleClearCache}>
+  1315→            <Trash2 className="size-3.5" /> 清空缓存
+  1316→          </Button>
+  1317→        </div>
+  1318→
+  1319→        <ScrollArea className="max-h-72">
+  1320→          <div className="space-y-1">
+  1321→            {entries.map(([key, value]) => (
+  1322→              <div key={key} className="flex items-center justify-between gap-3 rounded-md px-3 py-2 hover:bg-muted/30 transition-colors">
+  1323→                <div className="min-w-0 flex-1">
+  1324→                  <p className="text-sm font-mono font-medium text-muted-foreground">{key}</p>
+  1325→                </div>
+  1326→                <div className="flex items-center gap-2 shrink-0">
+  1327→                  {editKey === key ? (
+  1328→                    <div className="flex items-center gap-1.5">
+  1329→                      <Input className="w-48 h-8 text-sm" value={editValue} onChange={e => setEditValue(e.target.value)} />
+  1330→                      <Button size="sm" className="h-8 px-2" onClick={() => updateMutation.mutate({ configKey: key, configValue: editValue })} disabled={updateMutation.isPending}>
+  1331→                        {updateMutation.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+  1332→                      </Button>
+  1333→                      <Button size="sm" variant="ghost" className="h-8 px-2" onClick={() => setEditKey(null)}>
+  1334→                        <XCircle className="size-3.5" />
+  1335→                      </Button>
+  1336→                    </div>
+  1337→                  ) : (
+  1338→                    <>
+  1339→                      <span className="text-sm font-mono bg-muted rounded px-2 py-0.5 max-w-[200px] truncate">{value}</span>
+  1340→                      <Button size="sm" variant="ghost" className="size-7 p-0" onClick={() => { setEditKey(key); setEditValue(value); }}>
+  1341→                        <Pencil className="size-3.5" />
+  1342→                      </Button>
+  1343→                    </>
+  1344→                  )}
+  1345→                </div>
+  1346→              </div>
+  1347→            ))}
+  1348→            {entries.length === 0 && (
+  1349→              <p className="text-sm text-muted-foreground py-4 text-center">暂无系统配置</p>
+  1350→            )}
+  1351→          </div>
+  1352→        </ScrollArea>
+  1353→      </CardContent>
+  1354→    </Card>
+  1355→  );
+  1356→}
+  1357→
+  1358→// ─── Main Settings Tab ────────────────────────────────────────────────────────
+  1359→
+  1360→export function SettingsTab() {
+  1361→  return (
+  1362→    <div className="space-y-2">
+  1363→      <div className="mb-4">
+  1364→        <h2 className="text-xl font-bold tracking-tight">设置</h2>
+  1365→        <p className="text-sm text-muted-foreground">策略版本、ETF配置、预算、规则、现金账户与系统参数管理</p>
+  1366→      </div>
+  1367→
+  1368→      <Accordion type="multiple" defaultValue={['strategy-versions', 'etf-configs', 'weekly-budget']} className="space-y-2">
+  1369→        <AccordionItem value="strategy-versions" className="border rounded-lg px-1">
+  1370→          <AccordionTrigger className="px-3 py-3 hover:no-underline">
+  1371→            <div className="flex items-center gap-2.5">
+  1372→              <GitBranch className="size-4 text-emerald-600" />
+  1373→              <span className="font-semibold">策略版本与目标配置</span>
+  1374→            </div>
+  1375→          </AccordionTrigger>
+  1376→          <AccordionContent className="px-1 pb-2">
+  1377→            <StrategyVersionSection />
+  1378→          </AccordionContent>
+  1379→        </AccordionItem>
+  1380→
+  1381→        <AccordionItem value="etf-configs" className="border rounded-lg px-1">
+  1382→          <AccordionTrigger className="px-3 py-3 hover:no-underline">
+  1383→            <div className="flex items-center gap-2.5">
+  1384→              <Landmark className="size-4 text-teal-600" />
+  1385→              <span className="font-semibold">ETF 核心配置</span>
+  1386→            </div>
+  1387→          </AccordionTrigger>
+  1388→          <AccordionContent className="px-1 pb-2">
+  1389→            <EtfConfigSection />
+  1390→          </AccordionContent>
+  1391→        </AccordionItem>
+  1392→
+  1393→        <AccordionItem value="weekly-budget" className="border rounded-lg px-1">
+  1394→          <AccordionTrigger className="px-3 py-3 hover:no-underline">
+  1395→            <div className="flex items-center gap-2.5">
+  1396→              <Wallet className="size-4 text-amber-600" />
+  1397→              <span className="font-semibold">周预算与默认值</span>
+  1398→            </div>
+  1399→          </AccordionTrigger>
+  1400→          <AccordionContent className="px-1 pb-2">
+  1401→            <WeeklyBudgetSection />
+  1402→          </AccordionContent>
+  1403→        </AccordionItem>
+  1404→
+  1405→        <AccordionItem value="rule-params" className="border rounded-lg px-1">
+  1406→          <AccordionTrigger className="px-3 py-3 hover:no-underline">
+  1407→            <div className="flex items-center gap-2.5">
+  1408→              <ListChecks className="size-4 text-cyan-600" />
+  1409→              <span className="font-semibold">规则参数</span>
+  1410→            </div>
+  1411→          </AccordionTrigger>
+  1412→          <AccordionContent className="px-1 pb-2">
+  1413→            <RuleParametersSection />
+  1414→          </AccordionContent>
+  1415→        </AccordionItem>
+  1416→
+  1417→        <AccordionItem value="cash-accounts" className="border rounded-lg px-1">
+  1418→          <AccordionTrigger className="px-3 py-3 hover:no-underline">
+  1419→            <div className="flex items-center gap-2.5">
+  1420→              <Wallet className="size-4 text-fuchsia-600" />
+  1421→              <span className="font-semibold">现金账户管理</span>
+  1422→            </div>
+  1423→          </AccordionTrigger>
+  1424→          <AccordionContent className="px-1 pb-2">
+  1425→            <CashAccountSection />
+  1426→          </AccordionContent>
+  1427→        </AccordionItem>
+  1428→
+  1429→        <AccordionItem value="data-sources" className="border rounded-lg px-1">
+  1430→          <AccordionTrigger className="px-3 py-3 hover:no-underline">
+  1431→            <div className="flex items-center gap-2.5">
+  1432→              <Database className="size-4 text-violet-600" />
+  1433→              <span className="font-semibold">数据源管理</span>
+  1434→            </div>
+  1435→          </AccordionTrigger>
+  1436→          <AccordionContent className="px-1 pb-2">
+  1437→            <DataSourceSection />
+  1438→          </AccordionContent>
+  1439→        </AccordionItem>
+  1440→
+  1441→        <AccordionItem value="system-configs" className="border rounded-lg px-1">
+  1442→          <AccordionTrigger className="px-3 py-3 hover:no-underline">
+  1443→            <div className="flex items-center gap-2.5">
+  1444→              <Cpu className="size-4 text-stone-600" />
+  1445→              <span className="font-semibold">系统配置</span>
+  1446→            </div>
+  1447→          </AccordionTrigger>
+  1448→          <AccordionContent className="px-1 pb-2">
+  1449→            <SystemConfigSection />
+  1450→          </AccordionContent>
+  1451→        </AccordionItem>
+  1452→      </Accordion>
+  1453→    </div>
+  1454→  );
+  1455→}

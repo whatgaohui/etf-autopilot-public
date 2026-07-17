@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Upload,
@@ -18,8 +18,13 @@ import {
   TrendingDown,
   RefreshCw,
   ChevronRight,
+  ChevronDown,
   ArrowRight,
+  Clock,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
@@ -36,6 +41,9 @@ import {
   TableFooter,
 } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Separator } from '@/components/ui/separator';
+import { FadeInUp } from '@/lib/motion';
 
 import type {
   ApiResponse,
@@ -45,6 +53,7 @@ import type {
   ExecutionOrderDisplay,
   CashLedgerDisplay,
   ReleasePlanDisplay,
+  CalculationLogDisplay,
   QualityStatus,
   OrderStatus,
   ExecutionMode,
@@ -57,14 +66,14 @@ import type {
 // ============================================================
 
 const WORKFLOW_STEPS = [
-  { label: '更新持仓', icon: Upload },
-  { label: '校准数据', icon: SlidersHorizontal },
-  { label: '确认注资', icon: Wallet },
-  { label: '数据门禁', icon: ShieldCheck },
-  { label: '生成建议', icon: Sparkles },
-  { label: '用户确认', icon: UserCheck },
-  { label: '成交回填', icon: ArrowDownToLine },
-  { label: '周度复盘', icon: ClipboardCheck },
+  { label: '更新持仓', icon: Upload, tooltip: '拉取券商/基金公司最新持仓快照' },
+  { label: '校准数据', icon: SlidersHorizontal, tooltip: '校准估值、溢价、现金等输入数据' },
+  { label: '确认注资', icon: Wallet, tooltip: '确认本周注资金额并写入承诺现金账户' },
+  { label: '数据门禁', icon: ShieldCheck, tooltip: '检查数据质量五态：正常/降级/过期/冲突/缺失' },
+  { label: '生成建议', icon: Sparkles, tooltip: '规则引擎计算各ETF买入/卖出建议' },
+  { label: '用户确认', icon: UserCheck, tooltip: '审核并确认/拒绝建议执行单' },
+  { label: '成交回填', icon: ArrowDownToLine, tooltip: '回填实际成交价、份额、手续费' },
+  { label: '周度复盘', icon: ClipboardCheck, tooltip: '对账、审计、生成本周复盘报告' },
 ] as const;
 
 const CASH_ACCOUNT_LABELS: Record<CashAccountType, string> = {
@@ -247,38 +256,47 @@ function WeeklyTaskStatusBar({ dashboard }: { dashboard: DashboardData | null })
 
             return (
               <React.Fragment key={step.label}>
-                <div className="flex flex-col items-center gap-1.5 min-w-0 flex-1">
-                  <div
-                    className={[
-                      'flex items-center justify-center size-9 rounded-full border-2 transition-all duration-300',
-                      state === 'completed'
-                        ? 'border-emerald-500 bg-emerald-500 text-white'
-                        : state === 'current'
-                          ? 'border-emerald-500 bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 shadow-[0_0_0_3px_rgba(16,185,129,0.15)]'
-                          : state === 'blocked'
-                            ? 'border-red-400 bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-400 shadow-[0_0_0_3px_rgba(239,68,68,0.15)]'
-                            : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-gray-400 dark:text-gray-500',
-                    ].join(' ')}
-                  >
-                    {state === 'completed' ? (
-                      <Check className="size-4" />
-                    ) : (
-                      <Icon className="size-3.5" />
-                    )}
-                  </div>
-                  <span
-                    className={[
-                      'text-[11px] font-medium text-center leading-tight',
-                      state === 'completed' || state === 'current'
-                        ? 'text-foreground'
-                        : state === 'blocked'
-                          ? 'text-red-600 dark:text-red-400'
-                          : 'text-muted-foreground/60',
-                    ].join(' ')}
-                  >
-                    {step.label}
-                  </span>
-                </div>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex flex-col items-center gap-1.5 min-w-0 flex-1 cursor-default">
+                      <div
+                        className={[
+                          'relative flex items-center justify-center size-9 rounded-full border-2 transition-all duration-300',
+                          state === 'completed'
+                            ? 'border-emerald-500 bg-emerald-500 text-white'
+                            : state === 'current'
+                              ? 'border-emerald-500 bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 animate-glow-ring'
+                              : state === 'blocked'
+                                ? 'border-red-400 bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-400'
+                                : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-gray-400 dark:text-gray-500',
+                        ].join(' ')}
+                      >
+                        {state === 'completed' ? (
+                          <Check className="size-4" />
+                        ) : state === 'blocked' ? (
+                          <XCircle className="size-4" />
+                        ) : (
+                          <Icon className="size-3.5" />
+                        )}
+                      </div>
+                      <span
+                        className={[
+                          'text-[11px] font-medium text-center leading-tight',
+                          state === 'completed' || state === 'current'
+                            ? 'text-foreground'
+                            : state === 'blocked'
+                              ? 'text-red-600 dark:text-red-400'
+                              : 'text-muted-foreground/60',
+                        ].join(' ')}
+                      >
+                        {step.label}
+                      </span>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    <p className="text-[11px]">{step.tooltip}</p>
+                  </TooltipContent>
+                </Tooltip>
                 {!isLast && (
                   <div className="flex-shrink-0 self-start mt-4 -mx-1">
                     <div
@@ -303,29 +321,38 @@ function WeeklyTaskStatusBar({ dashboard }: { dashboard: DashboardData | null })
             const Icon = step.icon;
 
             return (
-              <div key={step.label} className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-2 py-1.5">
-                <div
-                  className={[
-                    'flex items-center justify-center size-5 rounded-full shrink-0',
-                    state === 'completed'
-                      ? 'bg-emerald-500 text-white'
-                      : state === 'current'
-                        ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400'
-                        : state === 'blocked'
-                          ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
-                          : 'bg-gray-100 text-gray-400 dark:bg-gray-800',
-                  ].join(' ')}
-                >
-                  {state === 'completed' ? (
-                    <Check className="size-3" />
-                  ) : (
-                    <Icon className="size-2.5" />
-                  )}
-                </div>
-                <span className="text-[10px] font-medium truncate text-muted-foreground">
-                  {step.label}
-                </span>
-              </div>
+              <Tooltip key={step.label}>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-2 py-1.5 cursor-default">
+                    <div
+                      className={[
+                        'flex items-center justify-center size-5 rounded-full shrink-0',
+                        state === 'completed'
+                          ? 'bg-emerald-500 text-white'
+                          : state === 'current'
+                            ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400 animate-glow-ring-sm'
+                            : state === 'blocked'
+                              ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
+                              : 'bg-gray-100 text-gray-400 dark:bg-gray-800',
+                      ].join(' ')}
+                    >
+                      {state === 'completed' ? (
+                        <Check className="size-3" />
+                      ) : state === 'blocked' ? (
+                        <XCircle className="size-3" />
+                      ) : (
+                        <Icon className="size-2.5" />
+                      )}
+                    </div>
+                    <span className="text-[10px] font-medium truncate text-muted-foreground">
+                      {step.label}
+                    </span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  <p className="text-[11px]">{step.tooltip}</p>
+                </TooltipContent>
+              </Tooltip>
             );
           })}
         </div>
@@ -385,11 +412,24 @@ function DataQualityGateCard({
   isLoading: boolean;
   isError: boolean;
 }) {
-  const isBlocked = useMemo(() => {
-    if (!qualityData) return false;
-    const byStatus = qualityData.byStatus ?? {};
-    return (byStatus['conflict'] ?? 0) > 0 || (byStatus['missing'] ?? 0) > 0;
+  // Derive per-ETF status counts from latestPerEtf scores
+  const etfStatusCounts = useMemo(() => {
+    const counts: Record<QualityStatus, number> = {
+      valid: 0, degraded: 0, stale: 0, conflict: 0, missing: 0,
+    };
+    if (qualityData?.latestPerEtf) {
+      for (const item of qualityData.latestPerEtf) {
+        const status = scoreToStatus(item.maxScore);
+        counts[status]++;
+      }
+    }
+    return counts;
   }, [qualityData]);
+
+  const isBlocked = useMemo(() => {
+    // Only blocked when there are ETF-level conflict or missing statuses
+    return (etfStatusCounts.conflict ?? 0) > 0 || (etfStatusCounts.missing ?? 0) > 0;
+  }, [etfStatusCounts]);
 
   const etfQualityMap = useMemo(() => {
     const map = new Map<string, { score: number | null; latestAt: string | null }>();
@@ -446,7 +486,6 @@ function DataQualityGateCard({
     );
   }
 
-  const byStatus = qualityData.byStatus ?? {};
   const statusKeys: QualityStatus[] = ['valid', 'degraded', 'stale', 'conflict', 'missing'];
 
   return (
@@ -456,7 +495,7 @@ function DataQualityGateCard({
           <div>
             <CardTitle className="text-sm">数据门禁摘要</CardTitle>
             <CardDescription className="text-xs">
-              共 {qualityData.total} 条质量记录 · {qualityData.uniqueEtfCount} 只 ETF
+              {qualityData.latestPerEtf.length} 只 ETF · {qualityData.total} 条检测记录
             </CardDescription>
           </div>
           <div className="flex items-center gap-1.5">
@@ -475,10 +514,10 @@ function DataQualityGateCard({
         </div>
       </CardHeader>
       <CardContent className="pt-0 space-y-3">
-        {/* Status distribution badges */}
+        {/* Per-ETF status distribution badges */}
         <div className="flex flex-wrap gap-1.5">
           {statusKeys.map((status) => {
-            const count = byStatus[status] ?? 0;
+            const count = etfStatusCounts[status] ?? 0;
             if (count === 0) return null;
             const config = QUALITY_STATUS_CONFIG[status];
             return (
@@ -491,40 +530,49 @@ function DataQualityGateCard({
               </span>
             );
           })}
-          {qualityData.total === 0 && (
+          {qualityData.latestPerEtf.length === 0 && (
             <span className="text-[11px] text-muted-foreground">暂无质量记录</span>
           )}
         </div>
 
-        {/* Per-ETF grid */}
+        {/* Per-ETF grid with score badge */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           {etfConfigs.map((etf) => {
             const quality = etfQualityMap.get(etf.code);
-            const status = scoreToStatus(quality?.score ?? null);
+            const score = quality?.score ?? null;
+            const status = scoreToStatus(score);
             const config = QUALITY_STATUS_CONFIG[status];
+
+            // Score color: green >= 80, amber >= 60, orange >= 40, red < 40
+            const scoreColorClass = score == null
+              ? 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+              : score >= 80
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                : score >= 60
+                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                  : score >= 40
+                    ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
+                    : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
 
             return (
               <div
                 key={etf.code}
-                className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/20 px-3 py-2"
+                className="flex items-center gap-2.5 rounded-lg border border-border/50 bg-muted/20 px-3 py-2"
               >
-                <div className="min-w-0">
+                {/* Prominent score badge */}
+                <div className={`flex items-center justify-center size-9 rounded-lg font-bold text-sm font-mono shrink-0 ${scoreColorClass}`}>
+                  {score ?? '—'}
+                </div>
+                <div className="min-w-0 flex-1">
                   <div className="text-xs font-medium truncate">{etf.name}</div>
                   <div className="text-[10px] text-muted-foreground font-mono">{etf.code}</div>
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                  {quality?.score != null && (
-                    <span className="text-[10px] font-mono text-muted-foreground">
-                      {quality.score}
-                    </span>
-                  )}
-                  <span
-                    className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${config.bgClass}`}
-                  >
-                    <span className={`size-1 rounded-full ${config.dotClass}`} />
-                    {config.label}
-                  </span>
-                </div>
+                <span
+                  className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-medium shrink-0 ${config.bgClass}`}
+                >
+                  <span className={`size-1 rounded-full ${config.dotClass}`} />
+                  {config.label}
+                </span>
               </div>
             );
           })}
@@ -947,28 +995,69 @@ function WeeklyExecutionSummary({
                   const statusCfg = ORDER_STATUS_CONFIG[order.status];
                   const etfName = etfNameMap.get(order.etfCode) ?? order.etfCode;
                   const isActionable = order.status === 'ready_for_review';
+                  const isBlocked = order.status === 'blocked';
+                  const isExecuted = order.status === 'executed';
+                  const isPartiallyExecuted = order.status === 'partially_executed';
+                  const isConfirmed = order.status === 'confirmed';
+
+                  // Visual differentiation by status
+                  let borderClass: string;
+                  let bgClass: string;
+                  let StatusIcon: React.ReactNode = null;
+
+                  if (isActionable) {
+                    // ready_for_review: dotted border + emerald outline, pulsing dot
+                    borderClass = 'border-l-4 border-l-emerald-400 border border-dashed border-emerald-300 dark:border-emerald-700';
+                    bgClass = 'bg-emerald-50/30 dark:bg-emerald-950/10';
+                    StatusIcon = (
+                      <span className="relative flex size-4 shrink-0 items-center justify-center">
+                        <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-40" />
+                        <Circle className="size-2.5 text-emerald-500 relative" fill="currentColor" />
+                      </span>
+                    );
+                  } else if (isConfirmed) {
+                    // confirmed: solid emerald left border, checkmark icon
+                    borderClass = 'border-l-4 border-l-emerald-500 border border-border/40';
+                    bgClass = 'bg-muted/20';
+                    StatusIcon = <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />;
+                  } else if (isExecuted) {
+                    // executed: solid emerald left border, checkmark icon
+                    borderClass = 'border-l-4 border-l-emerald-500 border border-border/40';
+                    bgClass = 'bg-muted/20';
+                    StatusIcon = <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />;
+                  } else if (isBlocked) {
+                    // blocked: solid red left border, XCircle icon, red subtle bg
+                    borderClass = 'border-l-4 border-l-red-500 border border-red-200 dark:border-red-800/40';
+                    bgClass = 'bg-red-50/50 dark:bg-red-950/20';
+                    StatusIcon = <XCircle className="size-4 text-red-500 shrink-0" />;
+                  } else if (isPartiallyExecuted) {
+                    borderClass = 'border-l-4 border-l-amber-500 border border-border/40';
+                    bgClass = 'bg-muted/20';
+                    StatusIcon = <CheckCircle2 className="size-4 text-amber-500 shrink-0" />;
+                  } else {
+                    borderClass = 'border-l-4 border-l-gray-300 dark:border-l-gray-600 border border-border/40';
+                    bgClass = 'bg-muted/20';
+                  }
 
                   return (
                     <div
                       key={order.id}
-                      className={`rounded-lg border-l-4 bg-muted/20 px-3 py-2.5 ${
-                        order.status === 'blocked'
-                          ? 'border-l-red-500'
-                          : order.status === 'ready_for_review'
-                            ? 'border-l-emerald-500'
-                            : order.status === 'confirmed' || order.status === 'executed'
-                              ? 'border-l-teal-500'
-                              : 'border-l-gray-300 dark:border-l-gray-600'
-                      }`}
+                      className={`rounded-lg px-3 py-2.5 transition-all duration-200 ${borderClass} ${bgClass}`}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
+                          {/* Status icon */}
+                          {StatusIcon}
                           <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-medium">{etfName}</span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={`text-xs font-medium ${isBlocked ? 'text-red-700 dark:text-red-300' : ''}`}>{etfName}</span>
                               <span className="text-[10px] text-muted-foreground font-mono">
                                 {order.etfCode}
                               </span>
+                              {/* Execution mode badge */}
+                              <Badge variant="outline" className="text-[9px] font-mono px-1 py-0 h-4">
+                                {EXECUTION_MODE_LABELS[order.executionMode]}
+                              </Badge>
                             </div>
                             <div className="flex items-center gap-2 mt-0.5 text-[11px] text-muted-foreground">
                               <span>
@@ -980,8 +1069,6 @@ function WeeklyExecutionSummary({
                                   ≈ {order.plannedSharesActual.toLocaleString('zh-CN')} 份
                                 </span>
                               )}
-                              <span className="text-muted-foreground/60">|</span>
-                              <span>{EXECUTION_MODE_LABELS[order.executionMode]}</span>
                             </div>
                           </div>
                         </div>
@@ -1235,6 +1322,144 @@ function CashFlowCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ============================================================
+// Section 6.5: Calculation History Log
+// ============================================================
+
+function CalculationHistoryCard() {
+  const { data: logs, isLoading, isError } = useQuery({
+    queryKey: ['calculation-logs', 5],
+    queryFn: async () => {
+      const res = await fetch('/api/calculation-logs?limit=5');
+      const data: ApiResponse<CalculationLogDisplay[]> = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to fetch calculation logs');
+      return data.data!;
+    },
+    staleTime: 60_000,
+  });
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-3 w-48" />
+        </CardHeader>
+        <CardContent className="pt-0 space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-14 w-full rounded-lg" />
+          ))}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (isError || !logs) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-1.5">
+            <Clock className="size-4 text-stone-500" />
+            历史计算记录
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <p className="text-xs text-muted-foreground">无法加载计算历史</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <FadeInUp>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-1.5">
+            <Clock className="size-4 text-stone-500" />
+            历史计算记录
+          </CardTitle>
+          <CardDescription className="text-xs">
+            最近 {logs.length} 次计算结果
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          {logs.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-6">暂无计算记录</p>
+          ) : (
+            <div className="space-y-2">
+              {logs.map((log, idx) => (
+                <CalcHistoryItem key={log.id} log={log} index={idx} />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </FadeInUp>
+  );
+}
+
+function CalcHistoryItem({ log, index }: { log: CalculationLogDisplay; index: number }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <FadeInUp delay={index * 0.05}>
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <CollapsibleTrigger className="w-full text-left">
+          <div
+            className={`flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5 cursor-pointer hover:bg-muted/40 transition-colors`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-medium font-mono truncate max-w-[120px]">
+                  {log.calculationId.slice(0, 8)}…
+                </span>
+                {log.strategyVersion && (
+                  <Badge variant="outline" className="text-[10px] font-mono">
+                    策略 {log.strategyVersion}
+                  </Badge>
+                )}
+                <Badge variant="secondary" className="text-[10px] font-mono">
+                  引擎 {log.engineVersion}
+                </Badge>
+              </div>
+              <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground">
+                <span>{formatDateTime(log.createdAt)}</span>
+                <span className="text-muted-foreground/40">|</span>
+                <span>EAB {formatMoney(log.eabYuan)}</span>
+                <span className="text-muted-foreground/40">|</span>
+                <span>预算 {formatMoney(log.budgetYuan)}</span>
+                <span className="text-muted-foreground/40">|</span>
+                <span className="text-emerald-600 dark:text-emerald-400">分配 {formatMoney(log.totalAllocatedYuan)}</span>
+                <span className="text-muted-foreground/40">|</span>
+                <span className="text-amber-600 dark:text-amber-400">未分配 {formatMoney(log.totalUnallocatedYuan)}</span>
+              </div>
+            </div>
+            <ChevronDown
+              className={`size-4 text-muted-foreground shrink-0 ml-2 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+            />
+          </div>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="mt-1 ml-3 rounded-lg border border-dashed border-border/60 bg-muted/10 px-3 py-2.5 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground shrink-0">inputsHash</span>
+              <code className="text-[10px] font-mono text-muted-foreground/80 bg-muted px-1.5 py-0.5 rounded break-all">
+                {log.inputsHash.length > 64 ? log.inputsHash.slice(0, 64) + '…' : log.inputsHash}
+              </code>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+              <div><span className="text-muted-foreground">再平衡</span><span className="ml-1 font-mono">{formatMoney(log.totalRebalancedYuan)}</span></div>
+              <div><span className="text-muted-foreground">总分配</span><span className="ml-1 font-mono text-emerald-600 dark:text-emerald-400">{formatMoney(log.totalAllocatedYuan)}</span></div>
+              <div><span className="text-muted-foreground">未分配</span><span className="ml-1 font-mono text-amber-600 dark:text-amber-400">{formatMoney(log.totalUnallocatedYuan)}</span></div>
+              <div><span className="text-muted-foreground">资金去向</span><span className="ml-1 font-mono">{log.cashDestination ?? '—'}</span></div>
+            </div>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </FadeInUp>
   );
 }
 
@@ -1516,6 +1741,9 @@ export function OverviewTab() {
         isLoading={cashLedgerQuery.isLoading}
         isError={cashLedgerQuery.isError}
       />
+
+      {/* Section 6.5: Calculation History */}
+      <CalculationHistoryCard />
 
       {/* Section 7: Release Plans */}
       <ReleasePlansCard

@@ -1,0 +1,1696 @@
+     1→'use client';
+     2→
+     3→import React, { useMemo, useState } from 'react';
+     4→import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+     5→import {
+     6→  Upload,
+     7→  SlidersHorizontal,
+     8→  Wallet,
+     9→  ShieldCheck,
+    10→  Sparkles,
+    11→  UserCheck,
+    12→  ArrowDownToLine,
+    13→  ClipboardCheck,
+    14→  Check,
+    15→  Circle,
+    16→  AlertTriangle,
+    17→  TrendingUp,
+    18→  TrendingDown,
+    19→  RefreshCw,
+    20→  ChevronRight,
+    21→  ChevronDown,
+    22→  ArrowRight,
+    23→  Clock,
+    24→  CheckCircle2,
+    25→  XCircle,
+    26→} from 'lucide-react';
+    27→import { toast } from 'sonner';
+    28→
+    29→import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
+    30→import { Badge } from '@/components/ui/badge';
+    31→import { Button } from '@/components/ui/button';
+    32→import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+    33→import {
+    34→  Table,
+    35→  TableHeader,
+    36→  TableBody,
+    37→  TableRow,
+    38→  TableHead,
+    39→  TableCell,
+    40→  TableFooter,
+    41→} from '@/components/ui/table';
+    42→import { Skeleton } from '@/components/ui/skeleton';
+    43→import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+    44→import { FadeInUp } from '@/lib/motion';
+    45→
+    46→import type {
+    47→  ApiResponse,
+    48→  DashboardData,
+    49→  EtfConfigWithSnapshot,
+    50→  CashAccountDisplay,
+    51→  ExecutionOrderDisplay,
+    52→  CashLedgerDisplay,
+    53→  ReleasePlanDisplay,
+    54→  CalculationLogDisplay,
+    55→  QualityStatus,
+    56→  OrderStatus,
+    57→  ExecutionMode,
+    58→  CashAccountType,
+    59→  ReleasePlanState,
+    60→} from '@/lib/types';
+    61→
+    62→// ============================================================
+    63→// Constants & Label Maps
+    64→// ============================================================
+    65→
+    66→const WORKFLOW_STEPS = [
+    67→  { label: '更新持仓', icon: Upload },
+    68→  { label: '校准数据', icon: SlidersHorizontal },
+    69→  { label: '确认注资', icon: Wallet },
+    70→  { label: '数据门禁', icon: ShieldCheck },
+    71→  { label: '生成建议', icon: Sparkles },
+    72→  { label: '用户确认', icon: UserCheck },
+    73→  { label: '成交回填', icon: ArrowDownToLine },
+    74→  { label: '周度复盘', icon: ClipboardCheck },
+    75→] as const;
+    76→
+    77→const CASH_ACCOUNT_LABELS: Record<CashAccountType, string> = {
+    78→  daily_cash: '日常现金',
+    79→  weekly_unallocated_cash: '未分配权益现金',
+    80→  rebalance_equity_reserve: '再平衡备用金',
+    81→  qdii_pending_cash_sp500: 'QDII挂起(标普500)',
+    82→  qdii_pending_cash_nasdaq: 'QDII挂起(纳斯达克)',
+    83→  manual_cash: '手动指定现金',
+    84→  weekly_contribution_committed: '本周承诺注资',
+    85→};
+    86→
+    87→const EXECUTION_MODE_LABELS: Record<ExecutionMode, string> = {
+    88→  immediate: '立即执行',
+    89→  staged: '分批执行',
+    90→  wait_pullback: '等待回撤',
+    91→  base_only: '仅基础仓',
+    92→};
+    93→
+    94→const ORDER_STATUS_CONFIG: Record<
+    95→  OrderStatus,
+    96→  { label: string; color: string; bgClass: string; textClass: string }
+    97→> = {
+    98→  draft: { label: '草稿', color: 'gray', bgClass: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300', textClass: 'text-gray-500' },
+    99→  calculating: { label: '计算中', color: 'gray', bgClass: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300', textClass: 'text-gray-500' },
+   100→  blocked: { label: '已阻断', color: 'red', bgClass: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', textClass: 'text-red-600 dark:text-red-400' },
+   101→  ready_for_review: { label: '待审核', color: 'emerald', bgClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', textClass: 'text-emerald-600 dark:text-emerald-400' },
+   102→  confirmed: { label: '已确认', color: 'teal', bgClass: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300', textClass: 'text-teal-600 dark:text-teal-400' },
+   103→  rejected: { label: '已拒绝', color: 'red', bgClass: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', textClass: 'text-red-600 dark:text-red-400' },
+   104→  expired: { label: '已过期', color: 'gray', bgClass: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300', textClass: 'text-gray-500' },
+   105→  partially_executed: { label: '部分成交', color: 'amber', bgClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300', textClass: 'text-amber-600 dark:text-amber-400' },
+   106→  executed: { label: '已执行', color: 'emerald', bgClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', textClass: 'text-emerald-600 dark:text-emerald-400' },
+   107→  cancelled: { label: '已取消', color: 'gray', bgClass: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300', textClass: 'text-gray-500' },
+   108→  reconciled: { label: '已对账', color: 'teal', bgClass: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300', textClass: 'text-teal-600 dark:text-teal-400' },
+   109→};
+   110→
+   111→const QUALITY_STATUS_CONFIG: Record<
+   112→  QualityStatus,
+   113→  { label: string; dotClass: string; bgClass: string; textClass: string }
+   114→> = {
+   115→  valid: { label: '正常', dotClass: 'bg-emerald-500', bgClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', textClass: 'text-emerald-600' },
+   116→  degraded: { label: '降级', dotClass: 'bg-amber-500', bgClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300', textClass: 'text-amber-600' },
+   117→  stale: { label: '过期', dotClass: 'bg-orange-500', bgClass: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300', textClass: 'text-orange-600' },
+   118→  conflict: { label: '冲突', dotClass: 'bg-red-500', bgClass: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', textClass: 'text-red-600' },
+   119→  missing: { label: '缺失', dotClass: 'bg-gray-400', bgClass: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400', textClass: 'text-gray-500' },
+   120→};
+   121→
+   122→const RELEASE_STATE_CONFIG: Record<
+   123→  ReleasePlanState,
+   124→  { label: string; bgClass: string }
+   125→> = {
+   126→  idle: { label: '空闲', bgClass: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' },
+   127→  releasing: { label: '释放中', bgClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' },
+   128→  paused: { label: '已暂停', bgClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' },
+   129→  completed: { label: '已完成', bgClass: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300' },
+   130→};
+   131→
+   132→const RELEASE_TYPE_LABELS: Record<string, string> = {
+   133→  qdii_premium: 'QDII溢价释放',
+   134→  rebalance_reserve: '再平衡备用金释放',
+   135→};
+   136→
+   137→// ============================================================
+   138→// Helper Functions
+   139→// ============================================================
+   140→
+   141→function formatMoney(value: number | null | undefined): string {
+   142→  if (value == null) return '—';
+   143→  return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+   144→}
+   145→
+   146→function formatPercent(value: number | null | undefined): string {
+   147→  if (value == null) return '—';
+   148→  return `${value.toFixed(2)}%`;
+   149→}
+   150→
+   151→function formatDateTime(iso: string | null | undefined): string {
+   152→  if (!iso) return '—';
+   153→  return new Date(iso).toLocaleString('zh-CN', {
+   154→    month: '2-digit',
+   155→    day: '2-digit',
+   156→    hour: '2-digit',
+   157→    minute: '2-digit',
+   158→  });
+   159→}
+   160→
+   161→function getDeviationColor(deviation: number | null): string {
+   162→  if (deviation == null) return 'text-muted-foreground';
+   163→  const abs = Math.abs(deviation);
+   164→  if (abs <= 2) return 'text-emerald-600 dark:text-emerald-400';
+   165→  if (abs <= 5) return 'text-amber-600 dark:text-amber-400';
+   166→  return 'text-red-600 dark:text-red-400';
+   167→}
+   168→
+   169→function getDeviationBadgeClass(deviation: number | null): string {
+   170→  if (deviation == null) return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400';
+   171→  const abs = Math.abs(deviation);
+   172→  if (abs <= 2) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300';
+   173→  if (abs <= 5) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300';
+   174→  return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
+   175→}
+   176→
+   177→type StepState = 'completed' | 'current' | 'pending' | 'blocked';
+   178→
+   179→interface WorkflowState {
+   180→  currentStep: number;
+   181→  stepStates: StepState[];
+   182→  isBlocked: boolean;
+   183→}
+   184→
+   185→function deriveWorkflowState(dashboard: DashboardData | null): WorkflowState {
+   186→  const states: StepState[] = Array(8).fill('pending');
+   187→  let currentStep = 0;
+   188→  let isBlocked = false;
+   189→
+   190→  if (!dashboard) return { currentStep: 0, stepStates: states, isBlocked: false };
+   191→
+   192→  const { latestCalculation, executionOrdersByStatus, dataQualitySummary } = dashboard;
+   193→  const orders = executionOrdersByStatus ?? {};
+   194→
+   195→  // Check from the end to find the furthest completed step
+   196→  if ((orders.reconciled ?? 0) > 0) {
+   197→    currentStep = 7;
+   198→  } else if ((orders.executed ?? 0) > 0 || (orders.partially_executed ?? 0) > 0) {
+   199→    currentStep = 6;
+   200→  } else if ((orders.confirmed ?? 0) > 0) {
+   201→    currentStep = 6;
+   202→  } else if ((orders.ready_for_review ?? 0) > 0) {
+   203→    currentStep = 5;
+   204→  } else if (latestCalculation) {
+   205→    currentStep = 4;
+   206→  } else if (dataQualitySummary && dataQualitySummary.total > 0) {
+   207→    const hasBadStatus = (dataQualitySummary.byStatus?.conflict ?? 0) > 0 || (dataQualitySummary.byStatus?.missing ?? 0) > 0;
+   208→    if (hasBadStatus) {
+   209→      currentStep = 3;
+   210→      isBlocked = true;
+   211→    } else {
+   212→      currentStep = 4;
+   213→    }
+   214→  } else {
+   215→    currentStep = 0;
+   216→  }
+   217→
+   218→  // Mark step states
+   219→  for (let i = 0; i < 8; i++) {
+   220→    if (i < currentStep) {
+   221→      states[i] = 'completed';
+   222→    } else if (i === currentStep) {
+   223→      states[i] = isBlocked ? 'blocked' : 'current';
+   224→    } else {
+   225→      states[i] = 'pending';
+   226→    }
+   227→  }
+   228→
+   229→  return { currentStep, stepStates: states, isBlocked };
+   230→}
+   231→
+   232→// ============================================================
+   233→// Section 1: Weekly Task Status Bar
+   234→// ============================================================
+   235→
+   236→function WeeklyTaskStatusBar({ dashboard }: { dashboard: DashboardData | null }) {
+   237→  const { stepStates, isBlocked } = deriveWorkflowState(dashboard);
+   238→
+   239→  return (
+   240→    <Card>
+   241→      <CardHeader className="pb-2">
+   242→        <CardTitle className="text-sm">本周工作流</CardTitle>
+   243→        <CardDescription className="text-xs">
+   244→          {isBlocked ? '数据门禁未通过，工作流已阻断' : '周度定投执行进度'}
+   245→        </CardDescription>
+   246→      </CardHeader>
+   247→      <CardContent className="pt-0">
+   248→        {/* Desktop: horizontal stepper */}
+   249→        <div className="hidden md:flex items-center justify-between gap-0">
+   250→          {WORKFLOW_STEPS.map((step, idx) => {
+   251→            const state = stepStates[idx];
+   252→            const Icon = step.icon;
+   253→            const isLast = idx === WORKFLOW_STEPS.length - 1;
+   254→
+   255→            return (
+   256→              <React.Fragment key={step.label}>
+   257→                <div className="flex flex-col items-center gap-1.5 min-w-0 flex-1">
+   258→                  <div
+   259→                    className={[
+   260→                      'flex items-center justify-center size-9 rounded-full border-2 transition-all duration-300',
+   261→                      state === 'completed'
+   262→                        ? 'border-emerald-500 bg-emerald-500 text-white'
+   263→                        : state === 'current'
+   264→                          ? 'border-emerald-500 bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 shadow-[0_0_0_3px_rgba(16,185,129,0.15)]'
+   265→                          : state === 'blocked'
+   266→                            ? 'border-red-400 bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-400 shadow-[0_0_0_3px_rgba(239,68,68,0.15)]'
+   267→                            : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-gray-400 dark:text-gray-500',
+   268→                    ].join(' ')}
+   269→                  >
+   270→                    {state === 'completed' ? (
+   271→                      <Check className="size-4" />
+   272→                    ) : (
+   273→                      <Icon className="size-3.5" />
+   274→                    )}
+   275→                  </div>
+   276→                  <span
+   277→                    className={[
+   278→                      'text-[11px] font-medium text-center leading-tight',
+   279→                      state === 'completed' || state === 'current'
+   280→                        ? 'text-foreground'
+   281→                        : state === 'blocked'
+   282→                          ? 'text-red-600 dark:text-red-400'
+   283→                          : 'text-muted-foreground/60',
+   284→                    ].join(' ')}
+   285→                  >
+   286→                    {step.label}
+   287→                  </span>
+   288→                </div>
+   289→                {!isLast && (
+   290→                  <div className="flex-shrink-0 self-start mt-4 -mx-1">
+   291→                    <div
+   292→                      className={[
+   293→                        'h-0.5 w-6 transition-colors duration-300',
+   294→                        state === 'completed'
+   295→                          ? 'bg-emerald-400'
+   296→                          : 'bg-gray-200 dark:bg-gray-700',
+   297→                      ].join(' ')}
+   298→                    />
+   299→                  </div>
+   300→                )}
+   301→              </React.Fragment>
+   302→            );
+   303→          })}
+   304→        </div>
+   305→
+   306→        {/* Mobile: 2-row compact grid */}
+   307→        <div className="md:hidden grid grid-cols-4 gap-2">
+   308→          {WORKFLOW_STEPS.map((step, idx) => {
+   309→            const state = stepStates[idx];
+   310→            const Icon = step.icon;
+   311→
+   312→            return (
+   313→              <div key={step.label} className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-2 py-1.5">
+   314→                <div
+   315→                  className={[
+   316→                    'flex items-center justify-center size-5 rounded-full shrink-0',
+   317→                    state === 'completed'
+   318→                      ? 'bg-emerald-500 text-white'
+   319→                      : state === 'current'
+   320→                        ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400'
+   321→                        : state === 'blocked'
+   322→                          ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
+   323→                          : 'bg-gray-100 text-gray-400 dark:bg-gray-800',
+   324→                  ].join(' ')}
+   325→                >
+   326→                  {state === 'completed' ? (
+   327→                    <Check className="size-3" />
+   328→                  ) : (
+   329→                    <Icon className="size-2.5" />
+   330→                  )}
+   331→                </div>
+   332→                <span className="text-[10px] font-medium truncate text-muted-foreground">
+   333→                  {step.label}
+   334→                </span>
+   335→              </div>
+   336→            );
+   337→          })}
+   338→        </div>
+   339→      </CardContent>
+   340→    </Card>
+   341→  );
+   342→}
+   343→
+   344→function WeeklyTaskStatusBarSkeleton() {
+   345→  return (
+   346→    <Card>
+   347→      <CardHeader className="pb-2">
+   348→        <Skeleton className="h-4 w-28" />
+   349→        <Skeleton className="h-3 w-40" />
+   350→      </CardHeader>
+   351→      <CardContent className="pt-0">
+   352→        <div className="hidden md:flex items-center justify-between">
+   353→          {Array.from({ length: 8 }).map((_, i) => (
+   354→            <React.Fragment key={i}>
+   355→              <div className="flex flex-col items-center gap-1.5">
+   356→                <Skeleton className="size-9 rounded-full" />
+   357→                <Skeleton className="h-3 w-10" />
+   358→              </div>
+   359→              {i < 7 && <Skeleton className="h-0.5 w-6 mt-4" />}
+   360→            </React.Fragment>
+   361→          ))}
+   362→        </div>
+   363→        <div className="md:hidden grid grid-cols-4 gap-2">
+   364→          {Array.from({ length: 8 }).map((_, i) => (
+   365→            <Skeleton key={i} className="h-8 rounded-lg" />
+   366→          ))}
+   367→        </div>
+   368→      </CardContent>
+   369→    </Card>
+   370→  );
+   371→}
+   372→
+   373→// ============================================================
+   374→// Section 2: Data Quality Gate Summary
+   375→// ============================================================
+   376→
+   377→interface DataQualitySummaryResponse {
+   378→  total: number;
+   379→  uniqueEtfCount: number;
+   380→  byStatus: Record<string, number>;
+   381→  latestPerEtf: { etfCode: string; latestAt: string | null; maxScore: number | null }[];
+   382→}
+   383→
+   384→function DataQualityGateCard({
+   385→  qualityData,
+   386→  etfConfigs,
+   387→  isLoading,
+   388→  isError,
+   389→}: {
+   390→  qualityData: DataQualitySummaryResponse | null;
+   391→  etfConfigs: EtfConfigWithSnapshot[];
+   392→  isLoading: boolean;
+   393→  isError: boolean;
+   394→}) {
+   395→  const isBlocked = useMemo(() => {
+   396→    if (!qualityData) return false;
+   397→    const byStatus = qualityData.byStatus ?? {};
+   398→    return (byStatus['conflict'] ?? 0) > 0 || (byStatus['missing'] ?? 0) > 0;
+   399→  }, [qualityData]);
+   400→
+   401→  const etfQualityMap = useMemo(() => {
+   402→    const map = new Map<string, { score: number | null; latestAt: string | null }>();
+   403→    if (qualityData?.latestPerEtf) {
+   404→      for (const item of qualityData.latestPerEtf) {
+   405→        map.set(item.etfCode, { score: item.maxScore, latestAt: item.latestAt });
+   406→      }
+   407→    }
+   408→    return map;
+   409→  }, [qualityData]);
+   410→
+   411→  function scoreToStatus(score: number | null): QualityStatus {
+   412→    if (score == null) return 'missing';
+   413→    if (score >= 80) return 'valid';
+   414→    if (score >= 60) return 'degraded';
+   415→    if (score >= 40) return 'stale';
+   416→    if (score >= 20) return 'conflict';
+   417→    return 'missing';
+   418→  }
+   419→
+   420→  if (isLoading) {
+   421→    return (
+   422→      <Card>
+   423→        <CardHeader className="pb-2">
+   424→          <Skeleton className="h-4 w-32" />
+   425→          <Skeleton className="h-3 w-48" />
+   426→        </CardHeader>
+   427→        <CardContent className="pt-0 space-y-4">
+   428→          <div className="flex gap-2">
+   429→            {Array.from({ length: 5 }).map((_, i) => (
+   430→              <Skeleton key={i} className="h-6 w-16 rounded-full" />
+   431→            ))}
+   432→          </div>
+   433→          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+   434→            {Array.from({ length: 6 }).map((_, i) => (
+   435→              <Skeleton key={i} className="h-10 rounded-lg" />
+   436→            ))}
+   437→          </div>
+   438→        </CardContent>
+   439→      </Card>
+   440→    );
+   441→  }
+   442→
+   443→  if (isError || !qualityData) {
+   444→    return (
+   445→      <Card>
+   446→        <CardHeader className="pb-2">
+   447→          <CardTitle className="text-sm">数据门禁摘要</CardTitle>
+   448→        </CardHeader>
+   449→        <CardContent className="pt-0">
+   450→          <p className="text-xs text-muted-foreground">无法加载数据质量信息</p>
+   451→        </CardContent>
+   452→      </Card>
+   453→    );
+   454→  }
+   455→
+   456→  const byStatus = qualityData.byStatus ?? {};
+   457→  const statusKeys: QualityStatus[] = ['valid', 'degraded', 'stale', 'conflict', 'missing'];
+   458→
+   459→  return (
+   460→    <Card>
+   461→      <CardHeader className="pb-2">
+   462→        <div className="flex items-center justify-between">
+   463→          <div>
+   464→            <CardTitle className="text-sm">数据门禁摘要</CardTitle>
+   465→            <CardDescription className="text-xs">
+   466→              共 {qualityData.total} 条质量记录 · {qualityData.uniqueEtfCount} 只 ETF
+   467→            </CardDescription>
+   468→          </div>
+   469→          <div className="flex items-center gap-1.5">
+   470→            {isBlocked ? (
+   471→              <Badge className={`${ORDER_STATUS_CONFIG.blocked.bgClass} border-0 text-[10px]`}>
+   472→                <AlertTriangle className="size-3 mr-0.5" />
+   473→                未通过
+   474→              </Badge>
+   475→            ) : qualityData.total > 0 ? (
+   476→              <Badge className={`${QUALITY_STATUS_CONFIG.valid.bgClass} border-0 text-[10px]`}>
+   477→                <ShieldCheck className="size-3 mr-0.5" />
+   478→                已通过
+   479→              </Badge>
+   480→            ) : null}
+   481→          </div>
+   482→        </div>
+   483→      </CardHeader>
+   484→      <CardContent className="pt-0 space-y-3">
+   485→        {/* Status distribution badges */}
+   486→        <div className="flex flex-wrap gap-1.5">
+   487→          {statusKeys.map((status) => {
+   488→            const count = byStatus[status] ?? 0;
+   489→            if (count === 0) return null;
+   490→            const config = QUALITY_STATUS_CONFIG[status];
+   491→            return (
+   492→              <span
+   493→                key={status}
+   494→                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${config.bgClass}`}
+   495→              >
+   496→                <span className={`size-1.5 rounded-full ${config.dotClass}`} />
+   497→                {config.label}: {count}
+   498→              </span>
+   499→            );
+   500→          })}
+   501→          {qualityData.total === 0 && (
+   502→            <span className="text-[11px] text-muted-foreground">暂无质量记录</span>
+   503→          )}
+   504→        </div>
+   505→
+   506→        {/* Per-ETF grid */}
+   507→        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+   508→          {etfConfigs.map((etf) => {
+   509→            const quality = etfQualityMap.get(etf.code);
+   510→            const status = scoreToStatus(quality?.score ?? null);
+   511→            const config = QUALITY_STATUS_CONFIG[status];
+   512→
+   513→            return (
+   514→              <div
+   515→                key={etf.code}
+   516→                className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/20 px-3 py-2"
+   517→              >
+   518→                <div className="min-w-0">
+   519→                  <div className="text-xs font-medium truncate">{etf.name}</div>
+   520→                  <div className="text-[10px] text-muted-foreground font-mono">{etf.code}</div>
+   521→                </div>
+   522→                <div className="flex items-center gap-1.5 shrink-0 ml-2">
+   523→                  {quality?.score != null && (
+   524→                    <span className="text-[10px] font-mono text-muted-foreground">
+   525→                      {quality.score}
+   526→                    </span>
+   527→                  )}
+   528→                  <span
+   529→                    className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${config.bgClass}`}
+   530→                  >
+   531→                    <span className={`size-1 rounded-full ${config.dotClass}`} />
+   532→                    {config.label}
+   533→                  </span>
+   534→                </div>
+   535→              </div>
+   536→            );
+   537→          })}
+   538→        </div>
+   539→
+   540→        {/* Blocking alert */}
+   541→        {isBlocked && (
+   542→          <Alert variant="destructive" className="py-2.5">
+   543→            <AlertTriangle className="size-3.5" />
+   544→            <AlertTitle className="text-xs font-semibold">数据门禁未通过</AlertTitle>
+   545→            <AlertDescription className="text-xs">
+   546→              建议生成已被阻断，请检查数据源质量后重试
+   547→            </AlertDescription>
+   548→          </Alert>
+   549→        )}
+   550→      </CardContent>
+   551→    </Card>
+   552→  );
+   553→}
+   554→
+   555→// ============================================================
+   556→// Section 3a: Portfolio Holdings Table
+   557→// ============================================================
+   558→
+   559→function PortfolioHoldingsTable({
+   560→  etfConfigs,
+   561→  isLoading,
+   562→  isError,
+   563→}: {
+   564→  etfConfigs: EtfConfigWithSnapshot[];
+   565→  isLoading: boolean;
+   566→  isError: boolean;
+   567→}) {
+   568→  if (isLoading) {
+   569→    return (
+   570→      <Card>
+   571→        <CardHeader className="pb-2">
+   572→          <Skeleton className="h-4 w-32" />
+   573→          <Skeleton className="h-3 w-48" />
+   574→        </CardHeader>
+   575→        <CardContent className="pt-0">
+   576→          <div className="space-y-2">
+   577→            {Array.from({ length: 5 }).map((_, i) => (
+   578→              <Skeleton key={i} className="h-8 w-full" />
+   579→            ))}
+   580→            <Skeleton className="h-8 w-full" />
+   581→          </div>
+   582→        </CardContent>
+   583→      </Card>
+   584→    );
+   585→  }
+   586→
+   587→  if (isError) {
+   588→    return (
+   589→      <Card>
+   590→        <CardHeader className="pb-2">
+   591→          <CardTitle className="text-sm">持仓概览</CardTitle>
+   592→        </CardHeader>
+   593→        <CardContent className="pt-0">
+   594→          <p className="text-xs text-muted-foreground">无法加载持仓数据</p>
+   595→        </CardContent>
+   596→      </Card>
+   597→    );
+   598→  }
+   599→
+   600→  const holdingsWithSnapshots = etfConfigs.filter((e) => e.latestSnapshot && !e.isBlacklisted);
+   601→  const totalMarketValue = holdingsWithSnapshots.reduce(
+   602→    (sum, e) => sum + (e.latestSnapshot?.marketValueYuan ?? 0),
+   603→    0,
+   604→  );
+   605→  const totalTargetRatio = holdingsWithSnapshots.reduce(
+   606→    (sum, e) => sum + (e.targetRatioPercent ?? 0),
+   607→    0,
+   608→  );
+   609→
+   610→  return (
+   611→    <Card className="overflow-hidden">
+   612→      <CardHeader className="pb-2">
+   613→        <CardTitle className="text-sm">持仓概览</CardTitle>
+   614→        <CardDescription className="text-xs">
+   615→          总市值 {formatMoney(totalMarketValue)}
+   616→        </CardDescription>
+   617→      </CardHeader>
+   618→      <CardContent className="pt-0">
+   619→        <Table>
+   620→          <TableHeader>
+   621→            <TableRow className="hover:bg-transparent">
+   622→              <TableHead className="text-[11px] h-8">ETF代码</TableHead>
+   623→              <TableHead className="text-[11px] h-8">名称</TableHead>
+   624→              <TableHead className="text-[11px] h-8 text-right">目标比例</TableHead>
+   625→              <TableHead className="text-[11px] h-8 text-right">当前市值</TableHead>
+   626→              <TableHead className="text-[11px] h-8 text-right hidden sm:table-cell">实际比例</TableHead>
+   627→              <TableHead className="text-[11px] h-8 text-right">偏离</TableHead>
+   628→            </TableRow>
+   629→          </TableHeader>
+   630→          <TableBody>
+   631→            {holdingsWithSnapshots.length === 0 ? (
+   632→              <TableRow>
+   633→                <TableCell colSpan={6} className="text-xs text-muted-foreground text-center py-6">
+   634→                  暂无持仓数据
+   635→                </TableCell>
+   636→              </TableRow>
+   637→            ) : (
+   638→              holdingsWithSnapshots.map((etf) => {
+   639→                const snap = etf.latestSnapshot!;
+   640→                const deviation = (snap.currentRatioPercent ?? 0) - (etf.targetRatioPercent ?? 0);
+   641→
+   642→                return (
+   643→                  <TableRow key={etf.code}>
+   644→                    <TableCell className="text-xs font-mono">{etf.code}</TableCell>
+   645→                    <TableCell className="text-xs font-medium">{etf.name}</TableCell>
+   646→                    <TableCell className="text-xs text-right font-mono">
+   647→                      {formatPercent(etf.targetRatioPercent)}
+   648→                    </TableCell>
+   649→                    <TableCell className="text-xs text-right font-mono">
+   650→                      {formatMoney(snap.marketValueYuan)}
+   651→                    </TableCell>
+   652→                    <TableCell className="text-xs text-right font-mono hidden sm:table-cell">
+   653→                      {formatPercent(snap.currentRatioPercent)}
+   654→                    </TableCell>
+   655→                    <TableCell className="text-right">
+   656→                      <span
+   657→                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-mono font-medium ${getDeviationBadgeClass(deviation)}`}
+   658→                      >
+   659→                        {deviation >= 0 ? '+' : ''}
+   660→                        {formatPercent(deviation)}
+   661→                      </span>
+   662→                    </TableCell>
+   663→                  </TableRow>
+   664→                );
+   665→              })
+   666→            )}
+   667→          </TableBody>
+   668→          {holdingsWithSnapshots.length > 0 && (
+   669→            <TableFooter>
+   670→              <TableRow className="hover:bg-transparent font-semibold">
+   671→                <TableCell className="text-[11px]">合计</TableCell>
+   672→                <TableCell className="text-[11px]">{holdingsWithSnapshots.length} 只</TableCell>
+   673→                <TableCell className="text-[11px] text-right font-mono">
+   674→                  {formatPercent(totalTargetRatio)}
+   675→                </TableCell>
+   676→                <TableCell className="text-[11px] text-right font-mono">
+   677→                  {formatMoney(totalMarketValue)}
+   678→                </TableCell>
+   679→                <TableCell className="hidden sm:table-cell" />
+   680→                <TableCell />
+   681→              </TableRow>
+   682→            </TableFooter>
+   683→          )}
+   684→        </Table>
+   685→      </CardContent>
+   686→    </Card>
+   687→  );
+   688→}
+   689→
+   690→// ============================================================
+   691→// Section 3b: Cash Accounts Summary
+   692→// ============================================================
+   693→
+   694→function CashAccountsSummary({
+   695→  accounts,
+   696→  isLoading,
+   697→  isError,
+   698→}: {
+   699→  accounts: CashAccountDisplay[];
+   700→  isLoading: boolean;
+   701→  isError: boolean;
+   702→}) {
+   703→  if (isLoading) {
+   704→    return (
+   705→      <Card>
+   706→        <CardHeader className="pb-2">
+   707→          <Skeleton className="h-4 w-32" />
+   708→          <Skeleton className="h-3 w-48" />
+   709→        </CardHeader>
+   710→        <CardContent className="pt-0 space-y-2">
+   711→          {Array.from({ length: 7 }).map((_, i) => (
+   712→            <Skeleton key={i} className="h-10 w-full rounded-lg" />
+   713→          ))}
+   714→        </CardContent>
+   715→      </Card>
+   716→    );
+   717→  }
+   718→
+   719→  if (isError) {
+   720→    return (
+   721→      <Card>
+   722→        <CardHeader className="pb-2">
+   723→          <CardTitle className="text-sm">现金子账户</CardTitle>
+   724→        </CardHeader>
+   725→        <CardContent className="pt-0">
+   726→          <p className="text-xs text-muted-foreground">无法加载现金账户数据</p>
+   727→        </CardContent>
+   728→      </Card>
+   729→    );
+   730→  }
+   731→
+   732→  const totalCash = accounts.reduce((sum, a) => sum + (a.balanceYuan ?? 0), 0);
+   733→
+   734→  return (
+   735→    <Card>
+   736→      <CardHeader className="pb-2">
+   737→        <CardTitle className="text-sm">现金子账户</CardTitle>
+   738→        <CardDescription className="text-xs">
+   739→          总现金 {formatMoney(totalCash)}
+   740→        </CardDescription>
+   741→      </CardHeader>
+   742→      <CardContent className="pt-0">
+   743→        <div className="space-y-1.5 max-h-96 overflow-y-auto scrollbar-refined">
+   744→          {accounts.map((acc) => (
+   745→            <div
+   746→              key={acc.id}
+   747→              className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 px-3 py-2"
+   748→            >
+   749→              <div className="flex items-center gap-2 min-w-0">
+   750→                <Wallet className="size-3.5 text-muted-foreground shrink-0" />
+   751→                <div className="min-w-0">
+   752→                  <div className="text-xs font-medium truncate">
+   753→                    {CASH_ACCOUNT_LABELS[acc.accountType] ?? acc.accountType}
+   754→                  </div>
+   755→                  <div className="text-[10px] text-muted-foreground font-mono">
+   756→                    {acc.accountType}
+   757→                  </div>
+   758→                </div>
+   759→              </div>
+   760→              <div className="flex items-center gap-2 shrink-0 ml-2">
+   761→                {acc.countsAsEquityBase && (
+   762→                  <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 border-0 text-[9px] px-1.5">
+   763→                    EAB
+   764→                  </Badge>
+   765→                )}
+   766→                <span className="text-xs font-mono font-medium tabular-nums">
+   767→                  {formatMoney(acc.balanceYuan)}
+   768→                </span>
+   769→              </div>
+   770→            </div>
+   771→          ))}
+   772→          {accounts.length === 0 && (
+   773→            <p className="text-xs text-muted-foreground text-center py-4">暂无现金账户</p>
+   774→          )}
+   775→        </div>
+   776→        {/* Total */}
+   777→        {accounts.length > 0 && (
+   778→          <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/50">
+   779→            <span className="text-xs font-semibold">合计</span>
+   780→            <span className="text-sm font-bold font-mono tabular-nums">
+   781→              {formatMoney(totalCash)}
+   782→            </span>
+   783→          </div>
+   784→        )}
+   785→      </CardContent>
+   786→    </Card>
+   787→  );
+   788→}
+   789→
+   790→// ============================================================
+   791→// Section 4: Weekly Execution Summary
+   792→// ============================================================
+   793→
+   794→function WeeklyExecutionSummary({
+   795→  dashboard,
+   796→  executionOrders,
+   797→  etfConfigs,
+   798→  isLoading,
+   799→  isError,
+   800→}: {
+   801→  dashboard: DashboardData | null;
+   802→  executionOrders: ExecutionOrderDisplay[];
+   803→  etfConfigs: EtfConfigWithSnapshot[];
+   804→  isLoading: boolean;
+   805→  isError: boolean;
+   806→}) {
+   807→  const queryClient = useQueryClient();
+   808→
+   809→  const etfNameMap = useMemo(() => {
+   810→    const map = new Map<string, string>();
+   811→    for (const e of etfConfigs) map.set(e.code, e.name);
+   812→    return map;
+   813→  }, [etfConfigs]);
+   814→
+   815→  const latestCalc = dashboard?.latestCalculation ?? null;
+   816→  const latestCalcId = latestCalc?.calculationId ?? null;
+   817→
+   818→  // Filter orders for the latest calculation
+   819→  const calcOrders = useMemo(() => {
+   820→    if (!latestCalcId) return [];
+   821→    return executionOrders.filter((o) => o.calculationId === latestCalcId);
+   822→  }, [executionOrders, latestCalcId]);
+   823→
+   824→  // Confirm mutation
+   825→  const confirmMutation = useMutation({
+   826→    mutationFn: async (orderId: string) => {
+   827→      const res = await fetch('/api/execution-orders', {
+   828→        method: 'PUT',
+   829→        headers: { 'Content-Type': 'application/json' },
+   830→        body: JSON.stringify({ id: orderId, status: 'confirmed' }),
+   831→      });
+   832→      const data: ApiResponse = await res.json();
+   833→      if (!data.success) throw new Error(data.error ?? '确认失败');
+   834→      return data;
+   835→    },
+   836→    onSuccess: () => {
+   837→      toast.success('执行单已确认');
+   838→      queryClient.invalidateQueries({ queryKey: ['execution-orders'] });
+   839→      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+   840→    },
+   841→    onError: (err) => toast.error(err instanceof Error ? err.message : '确认失败'),
+   842→  });
+   843→
+   844→  // Reject mutation
+   845→  const rejectMutation = useMutation({
+   846→    mutationFn: async (orderId: string) => {
+   847→      const res = await fetch('/api/execution-orders', {
+   848→        method: 'PUT',
+   849→        headers: { 'Content-Type': 'application/json' },
+   850→        body: JSON.stringify({ id: orderId, status: 'rejected', rejectReason: '用户手动拒绝' }),
+   851→      });
+   852→      const data: ApiResponse = await res.json();
+   853→      if (!data.success) throw new Error(data.error ?? '拒绝失败');
+   854→      return data;
+   855→    },
+   856→    onSuccess: () => {
+   857→      toast.success('执行单已拒绝');
+   858→      queryClient.invalidateQueries({ queryKey: ['execution-orders'] });
+   859→      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+   860→    },
+   861→    onError: (err) => toast.error(err instanceof Error ? err.message : '拒绝失败'),
+   862→  });
+   863→
+   864→  if (isLoading) {
+   865→    return (
+   866→      <Card>
+   867→        <CardHeader className="pb-2">
+   868→          <Skeleton className="h-4 w-48" />
+   869→          <Skeleton className="h-3 w-64" />
+   870→        </CardHeader>
+   871→        <CardContent className="pt-0 space-y-4">
+   872→          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+   873→            {Array.from({ length: 4 }).map((_, i) => (
+   874→              <Skeleton key={i} className="h-16 rounded-lg" />
+   875→            ))}
+   876→          </div>
+   877→          <div className="space-y-2">
+   878→            {Array.from({ length: 4 }).map((_, i) => (
+   879→              <Skeleton key={i} className="h-12 w-full rounded-lg" />
+   880→            ))}
+   881→          </div>
+   882→        </CardContent>
+   883→      </Card>
+   884→    );
+   885→  }
+   886→
+   887→  if (isError) {
+   888→    return (
+   889→      <Card>
+   890→        <CardHeader className="pb-2">
+   891→          <CardTitle className="text-sm">本周资金调拨执行单</CardTitle>
+   892→        </CardHeader>
+   893→        <CardContent className="pt-0">
+   894→          <p className="text-xs text-muted-foreground">无法加载执行单数据</p>
+   895→        </CardContent>
+   896→      </Card>
+   897→    );
+   898→  }
+   899→
+   900→  return (
+   901→    <Card>
+   902→      <CardHeader className="pb-2">
+   903→        <div className="flex items-center justify-between">
+   904→          <div>
+   905→            <CardTitle className="text-sm">本周资金调拨执行单</CardTitle>
+   906→            <CardDescription className="text-xs">
+   907→              {latestCalc
+   908→                ? `计算于 ${formatDateTime(latestCalc.createdAt ?? latestCalc.id)}`
+   909→                : '暂无本周计算结果'}
+   910→            </CardDescription>
+   911→          </div>
+   912→          {dashboard?.activeStrategy && (
+   913→            <Badge variant="outline" className="text-[10px] font-mono">
+   914→              策略 {dashboard.activeStrategy.version}
+   915→            </Badge>
+   916→          )}
+   917→        </div>
+   918→      </CardHeader>
+   919→      <CardContent className="pt-0 space-y-4">
+   920→        {latestCalc ? (
+   921→          <>
+   922→            {/* Calculation metadata */}
+   923→            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+   924→              <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2">
+   925→                <div className="text-[10px] text-muted-foreground">权益配置基准 (EAB)</div>
+   926→                <div className="text-sm font-bold font-mono tabular-nums mt-0.5">
+   927→                  {formatMoney(latestCalc.eabYuan)}
+   928→                </div>
+   929→              </div>
+   930→              <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2">
+   931→                <div className="text-[10px] text-muted-foreground">周预算</div>
+   932→                <div className="text-sm font-bold font-mono tabular-nums mt-0.5">
+   933→                  {formatMoney(latestCalc.budgetYuan)}
+   934→                </div>
+   935→              </div>
+   936→              <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2">
+   937→                <div className="text-[10px] text-muted-foreground">总分配金额</div>
+   938→                <div className="text-sm font-bold font-mono tabular-nums mt-0.5 text-emerald-600 dark:text-emerald-400">
+   939→                  {formatMoney(latestCalc.totalAllocatedYuan)}
+   940→                </div>
+   941→              </div>
+   942→              <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2">
+   943→                <div className="text-[10px] text-muted-foreground">未分配</div>
+   944→                <div className="text-sm font-bold font-mono tabular-nums mt-0.5 text-amber-600 dark:text-amber-400">
+   945→                  {formatMoney(latestCalc.totalUnallocatedYuan)}
+   946→                </div>
+   947→              </div>
+   948→            </div>
+   949→
+   950→            {/* Per-ETF orders */}
+   951→            {calcOrders.length > 0 ? (
+   952→              <div className="space-y-2">
+   953→                {calcOrders.map((order) => {
+   954→                  const statusCfg = ORDER_STATUS_CONFIG[order.status];
+   955→                  const etfName = etfNameMap.get(order.etfCode) ?? order.etfCode;
+   956→                  const isActionable = order.status === 'ready_for_review';
+   957→                  const isBlocked = order.status === 'blocked';
+   958→                  const isExecuted = order.status === 'executed';
+   959→                  const isPartiallyExecuted = order.status === 'partially_executed';
+   960→                  const isConfirmed = order.status === 'confirmed';
+   961→
+   962→                  // Colored left border: emerald=executed, amber=confirmed/partial, red=blocked, gray=ready_for_review & others
+   963→                  const borderClass = isExecuted
+   964→                    ? 'border-l-emerald-500'
+   965→                    : isBlocked
+   966→                      ? 'border-l-red-500'
+   967→                      : isConfirmed || isPartiallyExecuted
+   968→                        ? 'border-l-amber-500'
+   969→                        : 'border-l-gray-300 dark:border-l-gray-600';
+   970→
+   971→                  // Background style for blocked
+   972→                  const bgClass = isBlocked
+   973→                    ? 'bg-red-50/50 dark:bg-red-950/20 border-red-200 dark:border-red-800/40'
+   974→                    : 'bg-muted/20 border-border/40';
+   975→
+   976→                  return (
+   977→                    <div
+   978→                      key={order.id}
+   979→                      className={`rounded-lg border-l-4 px-3 py-2.5 transition-all duration-200 ${borderClass} ${bgClass} ${
+   980→                        isActionable ? 'animate-pulse' : ''
+   981→                      }`}
+   982→                    >
+   983→                      <div className="flex items-center justify-between gap-2">
+   984→                        <div className="flex items-center gap-2 min-w-0">
+   985→                          {/* Status icon */}
+   986→                          {isExecuted ? (
+   987→                            <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+   988→                          ) : isBlocked ? (
+   989→                            <XCircle className="size-4 text-red-500 shrink-0" />
+   990→                          ) : null}
+   991→                          <div className="min-w-0">
+   992→                            <div className="flex items-center gap-1.5 flex-wrap">
+   993→                              <span className={`text-xs font-medium ${isBlocked ? 'text-red-700 dark:text-red-300' : ''}`}>{etfName}</span>
+   994→                              <span className="text-[10px] text-muted-foreground font-mono">
+   995→                                {order.etfCode}
+   996→                              </span>
+   997→                              {/* Execution mode badge */}
+   998→                              <Badge variant="outline" className="text-[9px] font-mono px-1 py-0 h-4">
+   999→                                {EXECUTION_MODE_LABELS[order.executionMode]}
+  1000→                              </Badge>
+  1001→                            </div>
+  1002→                            <div className="flex items-center gap-2 mt-0.5 text-[11px] text-muted-foreground">
+  1003→                              <span>
+  1004→                                {order.side === 'buy' ? '买入' : '卖出'}{' '}
+  1005→                                {formatMoney(order.plannedAmountYuan)}
+  1006→                              </span>
+  1007→                              {order.plannedSharesActual != null && order.plannedSharesActual > 0 && (
+  1008→                                <span className="font-mono">
+  1009→                                  ≈ {order.plannedSharesActual.toLocaleString('zh-CN')} 份
+  1010→                                </span>
+  1011→                              )}
+  1012→                            </div>
+  1013→                          </div>
+  1014→                        </div>
+  1015→                        <div className="flex items-center gap-2 shrink-0">
+  1016→                          <Badge className={`${statusCfg.bgClass} border-0 text-[10px]`}>
+  1017→                            {statusCfg.label}
+  1018→                          </Badge>
+  1019→                          {isActionable && (
+  1020→                            <div className="flex items-center gap-1">
+  1021→                              <Button
+  1022→                                size="sm"
+  1023→                                className="h-6 text-[10px] px-2 bg-emerald-600 hover:bg-emerald-700"
+  1024→                                disabled={confirmMutation.isPending}
+  1025→                                onClick={() => confirmMutation.mutate(order.id)}
+  1026→                              >
+  1027→                                <Check className="size-3" />
+  1028→                                确认执行
+  1029→                              </Button>
+  1030→                              <Button
+  1031→                                variant="ghost"
+  1032→                                size="sm"
+  1033→                                className="h-6 text-[10px] px-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+  1034→                                disabled={rejectMutation.isPending}
+  1035→                                onClick={() => rejectMutation.mutate(order.id)}
+  1036→                              >
+  1037→                                拒绝
+  1038→                              </Button>
+  1039→                            </div>
+  1040→                          )}
+  1041→                        </div>
+  1042→                      </div>
+  1043→                      {order.rejectReason && (
+  1044→                        <div className="mt-1.5 text-[11px] text-red-600 dark:text-red-400 flex items-center gap-1">
+  1045→                          <AlertTriangle className="size-3" />
+  1046→                          {order.rejectReason}
+  1047→                        </div>
+  1048→                      )}
+  1049→                    </div>
+  1050→                  );
+  1051→                })}
+  1052→              </div>
+  1053→            ) : (
+  1054→              <div className="text-center py-6 text-xs text-muted-foreground">
+  1055→                本周计算暂无执行单
+  1056→              </div>
+  1057→            )}
+  1058→          </>
+  1059→        ) : (
+  1060→          <div className="text-center py-10 text-xs text-muted-foreground space-y-1">
+  1061→            <Sparkles className="size-8 mx-auto text-muted-foreground/30 mb-2" />
+  1062→            <p>暂无本周计算结果</p>
+  1063→            <p className="text-[10px] text-muted-foreground/60">
+  1064→              完成工作流前 4 步后自动生成
+  1065→            </p>
+  1066→          </div>
+  1067→        )}
+  1068→      </CardContent>
+  1069→    </Card>
+  1070→  );
+  1071→}
+  1072→
+  1073→// ============================================================
+  1074→// Section 5: Red Line Audit
+  1075→// ============================================================
+  1076→
+  1077→function RedLineAuditCard({
+  1078→  executionOrders,
+  1079→  etfConfigs,
+  1080→  isLoading,
+  1081→}: {
+  1082→  executionOrders: ExecutionOrderDisplay[];
+  1083→  etfConfigs: EtfConfigWithSnapshot[];
+  1084→  isLoading: boolean;
+  1085→}) {
+  1086→  const etfNameMap = useMemo(() => {
+  1087→    const map = new Map<string, string>();
+  1088→    for (const e of etfConfigs) map.set(e.code, e.name);
+  1089→    return map;
+  1090→  }, [etfConfigs]);
+  1091→
+  1092→  const blockedOrders = useMemo(
+  1093→    () => executionOrders.filter((o) => o.status === 'blocked' || o.status === 'rejected'),
+  1094→    [executionOrders],
+  1095→  );
+  1096→
+  1097→  if (isLoading) {
+  1098→    return (
+  1099→      <Card>
+  1100→        <CardHeader className="pb-2">
+  1101→          <Skeleton className="h-4 w-28" />
+  1102→          <Skeleton className="h-3 w-40" />
+  1103→        </CardHeader>
+  1104→        <CardContent className="pt-0">
+  1105→          <Skeleton className="h-20 w-full rounded-lg" />
+  1106→        </CardContent>
+  1107→      </Card>
+  1108→    );
+  1109→  }
+  1110→
+  1111→  if (blockedOrders.length === 0) return null;
+  1112→
+  1113→  return (
+  1114→    <Card className="border-red-200 dark:border-red-900/40">
+  1115→      <CardHeader className="pb-2">
+  1116→        <div className="flex items-center gap-2">
+  1117→          <AlertTriangle className="size-4 text-red-500" />
+  1118→          <div>
+  1119→            <CardTitle className="text-sm text-red-700 dark:text-red-400">风控审计</CardTitle>
+  1120→            <CardDescription className="text-xs">
+  1121→              {blockedOrders.length} 条被阻断或拒绝的执行单
+  1122→            </CardDescription>
+  1123→          </div>
+  1124→        </div>
+  1125→      </CardHeader>
+  1126→      <CardContent className="pt-0 space-y-2">
+  1127→        {blockedOrders.map((order) => {
+  1128→          const etfName = etfNameMap.get(order.etfCode) ?? order.etfCode;
+  1129→          const statusCfg = ORDER_STATUS_CONFIG[order.status];
+  1130→
+  1131→          return (
+  1132→            <Alert key={order.id} variant="destructive" className="py-2.5">
+  1133→              <div className="flex items-center justify-between gap-2 w-full">
+  1134→                <div className="min-w-0">
+  1135→                  <div className="flex items-center gap-1.5">
+  1136→                    <span className="text-xs font-semibold">
+  1137→                      {etfName}
+  1138→                    </span>
+  1139→                    <span className="text-[10px] font-mono opacity-80">
+  1140→                      {order.etfCode}
+  1141→                    </span>
+  1142→                    <Badge className={`${statusCfg.bgClass} border-0 text-[9px]`}>
+  1143→                      {statusCfg.label}
+  1144→                    </Badge>
+  1145→                  </div>
+  1146→                  {order.rejectReason && (
+  1147→                    <p className="text-[11px] mt-0.5 opacity-80">
+  1148→                      原因: {order.rejectReason}
+  1149→                    </p>
+  1150→                  )}
+  1151→                </div>
+  1152→                <div className="text-[11px] font-mono opacity-60 shrink-0">
+  1153→                  {formatMoney(order.plannedAmountYuan)}
+  1154→                </div>
+  1155→              </div>
+  1156→            </Alert>
+  1157→          );
+  1158→        })}
+  1159→      </CardContent>
+  1160→    </Card>
+  1161→  );
+  1162→}
+  1163→
+  1164→// ============================================================
+  1165→// Section 6: Cash Flow
+  1166→// ============================================================
+  1167→
+  1168→function CashFlowCard({
+  1169→  ledgerEntries,
+  1170→  isLoading,
+  1171→  isError,
+  1172→}: {
+  1173→  ledgerEntries: CashLedgerDisplay[];
+  1174→  isLoading: boolean;
+  1175→  isError: boolean;
+  1176→}) {
+  1177→  // Only show credit entries to avoid double-counting transfers
+  1178→  const creditEntries = useMemo(
+  1179→    () => ledgerEntries.filter((e) => e.entryType === 'credit'),
+  1180→    [ledgerEntries],
+  1181→  );
+  1182→
+  1183→  if (isLoading) {
+  1184→    return (
+  1185→      <Card>
+  1186→        <CardHeader className="pb-2">
+  1187→          <Skeleton className="h-4 w-28" />
+  1188→          <Skeleton className="h-3 w-40" />
+  1189→        </CardHeader>
+  1190→        <CardContent className="pt-0 space-y-1.5">
+  1191→          {Array.from({ length: 6 }).map((_, i) => (
+  1192→            <Skeleton key={i} className="h-9 w-full rounded-lg" />
+  1193→          ))}
+  1194→        </CardContent>
+  1195→      </Card>
+  1196→    );
+  1197→  }
+  1198→
+  1199→  if (isError) {
+  1200→    return (
+  1201→      <Card>
+  1202→        <CardHeader className="pb-2">
+  1203→          <CardTitle className="text-sm">现金子账户流水</CardTitle>
+  1204→        </CardHeader>
+  1205→        <CardContent className="pt-0">
+  1206→          <p className="text-xs text-muted-foreground">无法加载流水数据</p>
+  1207→        </CardContent>
+  1208→      </Card>
+  1209→    );
+  1210→  }
+  1211→
+  1212→  return (
+  1213→    <Card>
+  1214→      <CardHeader className="pb-2">
+  1215→        <CardTitle className="text-sm">现金子账户流水</CardTitle>
+  1216→        <CardDescription className="text-xs">
+  1217→          最近 {creditEntries.length} 条资金流动
+  1218→        </CardDescription>
+  1219→      </CardHeader>
+  1220→      <CardContent className="pt-0">
+  1221→        {creditEntries.length === 0 ? (
+  1222→          <p className="text-xs text-muted-foreground text-center py-6">暂无流水记录</p>
+  1223→        ) : (
+  1224→          <div className="max-h-96 overflow-y-auto scrollbar-refined">
+  1225→            <Table>
+  1226→              <TableHeader>
+  1227→                <TableRow className="hover:bg-transparent">
+  1228→                  <TableHead className="text-[11px] h-7">时间</TableHead>
+  1229→                  <TableHead className="text-[11px] h-7">流向</TableHead>
+  1230→                  <TableHead className="text-[11px] h-7 text-right">金额</TableHead>
+  1231→                  <TableHead className="text-[11px] h-7 hidden sm:table-cell">描述</TableHead>
+  1232→                </TableRow>
+  1233→              </TableHeader>
+  1234→              <TableBody>
+  1235→                {creditEntries.map((entry) => (
+  1236→                  <TableRow key={entry.id}>
+  1237→                    <TableCell className="text-[11px] font-mono text-muted-foreground py-1.5">
+  1238→                      {formatDateTime(entry.occurredAt)}
+  1239→                    </TableCell>
+  1240→                    <TableCell className="text-[11px] py-1.5">
+  1241→                      <span className="inline-flex items-center gap-1">
+  1242→                        <span className="text-muted-foreground truncate max-w-[80px] sm:max-w-none">
+  1243→                          {CASH_ACCOUNT_LABELS[entry.debitAccount] ?? entry.debitAccount}
+  1244→                        </span>
+  1245→                        <ArrowRight className="size-3 text-muted-foreground/50 shrink-0" />
+  1246→                        <span className="font-medium truncate max-w-[80px] sm:max-w-none">
+  1247→                          {CASH_ACCOUNT_LABELS[entry.creditAccount] ?? entry.creditAccount}
+  1248→                        </span>
+  1249→                      </span>
+  1250→                    </TableCell>
+  1251→                    <TableCell className="text-[11px] text-right font-mono font-medium py-1.5 text-emerald-600 dark:text-emerald-400">
+  1252→                      +{formatMoney(entry.amountYuan)}
+  1253→                    </TableCell>
+  1254→                    <TableCell className="text-[11px] text-muted-foreground hidden sm:table-cell py-1.5 truncate max-w-[200px]">
+  1255→                      {entry.referenceId ?? entry.transferId ?? '—'}
+  1256→                    </TableCell>
+  1257→                  </TableRow>
+  1258→                ))}
+  1259→              </TableBody>
+  1260→            </Table>
+  1261→          </div>
+  1262→        )}
+  1263→      </CardContent>
+  1264→    </Card>
+  1265→  );
+  1266→}
+  1267→
+  1268→// ============================================================
+  1269→// Section 6.5: Calculation History Log
+  1270→// ============================================================
+  1271→
+  1272→function CalculationHistoryCard() {
+  1273→  const { data: logs, isLoading, isError } = useQuery({
+  1274→    queryKey: ['calculation-logs', 5],
+  1275→    queryFn: async () => {
+  1276→      const res = await fetch('/api/calculation-logs?limit=5');
+  1277→      const data: ApiResponse<CalculationLogDisplay[]> = await res.json();
+  1278→      if (!data.success) throw new Error(data.error ?? 'Failed to fetch calculation logs');
+  1279→      return data.data!;
+  1280→    },
+  1281→    staleTime: 60_000,
+  1282→  });
+  1283→
+  1284→  if (isLoading) {
+  1285→    return (
+  1286→      <Card>
+  1287→        <CardHeader className="pb-2">
+  1288→          <Skeleton className="h-4 w-32" />
+  1289→          <Skeleton className="h-3 w-48" />
+  1290→        </CardHeader>
+  1291→        <CardContent className="pt-0 space-y-2">
+  1292→          {Array.from({ length: 3 }).map((_, i) => (
+  1293→            <Skeleton key={i} className="h-14 w-full rounded-lg" />
+  1294→          ))}
+  1295→        </CardContent>
+  1296→      </Card>
+  1297→    );
+  1298→  }
+  1299→
+  1300→  if (isError || !logs) {
+  1301→    return (
+  1302→      <Card>
+  1303→        <CardHeader className="pb-2">
+  1304→          <CardTitle className="text-sm flex items-center gap-1.5">
+  1305→            <Clock className="size-4 text-stone-500" />
+  1306→            历史计算记录
+  1307→          </CardTitle>
+  1308→        </CardHeader>
+  1309→        <CardContent className="pt-0">
+  1310→          <p className="text-xs text-muted-foreground">无法加载计算历史</p>
+  1311→        </CardContent>
+  1312→      </Card>
+  1313→    );
+  1314→  }
+  1315→
+  1316→  return (
+  1317→    <FadeInUp>
+  1318→      <Card>
+  1319→        <CardHeader className="pb-2">
+  1320→          <CardTitle className="text-sm flex items-center gap-1.5">
+  1321→            <Clock className="size-4 text-stone-500" />
+  1322→            历史计算记录
+  1323→          </CardTitle>
+  1324→          <CardDescription className="text-xs">
+  1325→            最近 {logs.length} 次计算结果
+  1326→          </CardDescription>
+  1327→        </CardHeader>
+  1328→        <CardContent className="pt-0">
+  1329→          {logs.length === 0 ? (
+  1330→            <p className="text-xs text-muted-foreground text-center py-6">暂无计算记录</p>
+  1331→          ) : (
+  1332→            <div className="space-y-2">
+  1333→              {logs.map((log, idx) => (
+  1334→                <CalcHistoryItem key={log.id} log={log} index={idx} />
+  1335→              ))}
+  1336→            </div>
+  1337→          )}
+  1338→        </CardContent>
+  1339→      </Card>
+  1340→    </FadeInUp>
+  1341→  );
+  1342→}
+  1343→
+  1344→function CalcHistoryItem({ log, index }: { log: CalculationLogDisplay; index: number }) {
+  1345→  const [open, setOpen] = useState(false);
+  1346→
+  1347→  return (
+  1348→    <FadeInUp delay={index * 0.05}>
+  1349→      <Collapsible open={open} onOpenChange={setOpen}>
+  1350→        <CollapsibleTrigger className="w-full text-left">
+  1351→          <div
+  1352→            className={`flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5 cursor-pointer hover:bg-muted/40 transition-colors`}
+  1353→          >
+  1354→            <div className="min-w-0 flex-1">
+  1355→              <div className="flex items-center gap-2 flex-wrap">
+  1356→                <span className="text-xs font-medium font-mono truncate max-w-[120px]">
+  1357→                  {log.calculationId.slice(0, 8)}…
+  1358→                </span>
+  1359→                {log.strategyVersion && (
+  1360→                  <Badge variant="outline" className="text-[10px] font-mono">
+  1361→                    策略 {log.strategyVersion}
+  1362→                  </Badge>
+  1363→                )}
+  1364→                <Badge variant="secondary" className="text-[10px] font-mono">
+  1365→                  引擎 {log.engineVersion}
+  1366→                </Badge>
+  1367→              </div>
+  1368→              <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground">
+  1369→                <span>{formatDateTime(log.createdAt)}</span>
+  1370→                <span className="text-muted-foreground/40">|</span>
+  1371→                <span>EAB {formatMoney(log.eabYuan)}</span>
+  1372→                <span className="text-muted-foreground/40">|</span>
+  1373→                <span>预算 {formatMoney(log.budgetYuan)}</span>
+  1374→                <span className="text-muted-foreground/40">|</span>
+  1375→                <span className="text-emerald-600 dark:text-emerald-400">分配 {formatMoney(log.totalAllocatedYuan)}</span>
+  1376→                <span className="text-muted-foreground/40">|</span>
+  1377→                <span className="text-amber-600 dark:text-amber-400">未分配 {formatMoney(log.totalUnallocatedYuan)}</span>
+  1378→              </div>
+  1379→            </div>
+  1380→            <ChevronDown
+  1381→              className={`size-4 text-muted-foreground shrink-0 ml-2 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+  1382→            />
+  1383→          </div>
+  1384→        </CollapsibleTrigger>
+  1385→        <CollapsibleContent>
+  1386→          <div className="mt-1 ml-3 rounded-lg border border-dashed border-border/60 bg-muted/10 px-3 py-2.5 space-y-2">
+  1387→            <div className="flex items-center gap-2">
+  1388→              <span className="text-[11px] text-muted-foreground shrink-0">inputsHash</span>
+  1389→              <code className="text-[10px] font-mono text-muted-foreground/80 bg-muted px-1.5 py-0.5 rounded break-all">
+  1390→                {log.inputsHash.length > 64 ? log.inputsHash.slice(0, 64) + '…' : log.inputsHash}
+  1391→              </code>
+  1392→            </div>
+  1393→            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+  1394→              <div><span className="text-muted-foreground">再平衡</span><span className="ml-1 font-mono">{formatMoney(log.totalRebalancedYuan)}</span></div>
+  1395→              <div><span className="text-muted-foreground">总分配</span><span className="ml-1 font-mono text-emerald-600 dark:text-emerald-400">{formatMoney(log.totalAllocatedYuan)}</span></div>
+  1396→              <div><span className="text-muted-foreground">未分配</span><span className="ml-1 font-mono text-amber-600 dark:text-amber-400">{formatMoney(log.totalUnallocatedYuan)}</span></div>
+  1397→              <div><span className="text-muted-foreground">资金去向</span><span className="ml-1 font-mono">{log.cashDestination ?? '—'}</span></div>
+  1398→            </div>
+  1399→          </div>
+  1400→        </CollapsibleContent>
+  1401→      </Collapsible>
+  1402→    </FadeInUp>
+  1403→  );
+  1404→}
+  1405→
+  1406→// ============================================================
+  1407→// Section 7: Release Plans
+  1408→// ============================================================
+  1409→
+  1410→function ReleasePlansCard({
+  1411→  plans,
+  1412→  isLoading,
+  1413→  isError,
+  1414→}: {
+  1415→  plans: ReleasePlanDisplay[];
+  1416→  isLoading: boolean;
+  1417→  isError: boolean;
+  1418→}) {
+  1419→  if (isLoading) {
+  1420→    return (
+  1421→      <Card>
+  1422→        <CardHeader className="pb-2">
+  1423→          <Skeleton className="h-4 w-28" />
+  1424→          <Skeleton className="h-3 w-48" />
+  1425→        </CardHeader>
+  1426→        <CardContent className="pt-0 space-y-2">
+  1427→          {Array.from({ length: 3 }).map((_, i) => (
+  1428→            <Skeleton key={i} className="h-14 w-full rounded-lg" />
+  1429→          ))}
+  1430→        </CardContent>
+  1431→      </Card>
+  1432→    );
+  1433→  }
+  1434→
+  1435→  if (isError) {
+  1436→    return (
+  1437→      <Card>
+  1438→        <CardHeader className="pb-2">
+  1439→          <CardTitle className="text-sm">释放计划</CardTitle>
+  1440→        </CardHeader>
+  1441→        <CardContent className="pt-0">
+  1442→          <p className="text-xs text-muted-foreground">无法加载释放计划数据</p>
+  1443→        </CardContent>
+  1444→      </Card>
+  1445→    );
+  1446→  }
+  1447→
+  1448→  const activePlans = plans.filter((p) => p.state !== 'completed');
+  1449→
+  1450→  if (activePlans.length === 0 && plans.length > 0) {
+  1451→    return (
+  1452→      <Card>
+  1453→        <CardHeader className="pb-2">
+  1454→          <CardTitle className="text-sm">释放计划</CardTitle>
+  1455→          <CardDescription className="text-xs">所有计划已完成</CardDescription>
+  1456→        </CardHeader>
+  1457→        <CardContent className="pt-0">
+  1458→          <p className="text-xs text-muted-foreground text-center py-6">暂无活跃的释放计划</p>
+  1459→        </CardContent>
+  1460→      </Card>
+  1461→    );
+  1462→  }
+  1463→
+  1464→  return (
+  1465→    <Card>
+  1466→      <CardHeader className="pb-2">
+  1467→        <CardTitle className="text-sm">释放计划</CardTitle>
+  1468→        <CardDescription className="text-xs">
+  1469→          {activePlans.length} 个活跃计划 · QDII溢价 & 再平衡备用金
+  1470→        </CardDescription>
+  1471→      </CardHeader>
+  1472→      <CardContent className="pt-0">
+  1473→        {activePlans.length === 0 && plans.length === 0 ? (
+  1474→          <p className="text-xs text-muted-foreground text-center py-6">暂无释放计划</p>
+  1475→        ) : (
+  1476→          <div className="space-y-2">
+  1477→            {(activePlans.length > 0 ? activePlans : plans).map((plan) => {
+  1478→              const stateCfg = RELEASE_STATE_CONFIG[plan.state];
+  1479→
+  1480→              return (
+  1481→                <div
+  1482→                  key={plan.id}
+  1483→                  className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5"
+  1484→                >
+  1485→                  <div className="min-w-0">
+  1486→                    <div className="flex items-center gap-1.5">
+  1487→                      <span className="text-xs font-medium">
+  1488→                        {RELEASE_TYPE_LABELS[plan.planType] ?? plan.planType}
+  1489→                      </span>
+  1490→                      {plan.targetEtf && (
+  1491→                        <span className="text-[10px] text-muted-foreground font-mono">
+  1492→                          → {plan.targetEtf}
+  1493→                        </span>
+  1494→                      )}
+  1495→                      <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium ${stateCfg.bgClass}`}>
+  1496→                        {stateCfg.label}
+  1497→                      </span>
+  1498→                    </div>
+  1499→                    <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground">
+  1500→                      <span>
+  1501→                        余额 {formatMoney(plan.balanceYuan)}
+  1502→                      </span>
+  1503→                      <span className="text-muted-foreground/40">|</span>
+  1504→                      <span>
+  1505→                        剩余 {plan.weeksRemaining}/{plan.weeksTotal} 周
+  1506→                      </span>
+  1507→                      <span className="text-muted-foreground/40">|</span>
+  1508→                      <span>
+  1509→                        每周 {formatMoney(plan.weeklyAmountYuan)}
+  1510→                      </span>
+  1511→                    </div>
+  1512→                    {plan.pausedReason && (
+  1513→                      <div className="flex items-center gap-1 mt-1 text-[10px] text-amber-600 dark:text-amber-400">
+  1514→                        <AlertTriangle className="size-2.5" />
+  1515→                        {plan.pausedReason}
+  1516→                      </div>
+  1517→                    )}
+  1518→                  </div>
+  1519→                  {/* Mini progress bar */}
+  1520→                  <div className="shrink-0 ml-3 hidden sm:flex flex-col items-end gap-1">
+  1521→                    <div className="w-20 h-1.5 bg-muted rounded-full overflow-hidden">
+  1522→                      <div
+  1523→                        className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+  1524→                        style={{
+  1525→                          width: `${plan.weeksTotal > 0 ? ((plan.weeksTotal - plan.weeksRemaining) / plan.weeksTotal) * 100 : 0}%`,
+  1526→                        }}
+  1527→                      />
+  1528→                    </div>
+  1529→                    <span className="text-[9px] font-mono text-muted-foreground">
+  1530→                      {plan.weeksTotal > 0 ? Math.round(((plan.weeksTotal - plan.weeksRemaining) / plan.weeksTotal) * 100) : 0}%
+  1531→                    </span>
+  1532→                  </div>
+  1533→                </div>
+  1534→              );
+  1535→            })}
+  1536→          </div>
+  1537→        )}
+  1538→      </CardContent>
+  1539→    </Card>
+  1540→  );
+  1541→}
+  1542→
+  1543→// ============================================================
+  1544→// Main Component: OverviewTab
+  1545→// ============================================================
+  1546→
+  1547→export function OverviewTab() {
+  1548→  // ─── Data Queries ─────────────────────────────────────────
+  1549→  const dashboardQuery = useQuery({
+  1550→    queryKey: ['dashboard'],
+  1551→    queryFn: async () => {
+  1552→      const res = await fetch('/api/dashboard');
+  1553→      const data: ApiResponse<DashboardData> = await res.json();
+  1554→      if (!data.success) throw new Error(data.error ?? 'Failed to fetch dashboard');
+  1555→      return data.data!;
+  1556→    },
+  1557→    staleTime: 30_000,
+  1558→    refetchInterval: 60_000,
+  1559→  });
+  1560→
+  1561→  const dataQualityQuery = useQuery({
+  1562→    queryKey: ['data-quality'],
+  1563→    queryFn: async () => {
+  1564→      const res = await fetch('/api/data-quality');
+  1565→      const data: ApiResponse<DataQualitySummaryResponse> = await res.json();
+  1566→      if (!data.success) throw new Error(data.error ?? 'Failed to fetch data quality');
+  1567→      return data.data!;
+  1568→    },
+  1569→    staleTime: 30_000,
+  1570→    refetchInterval: 60_000,
+  1571→  });
+  1572→
+  1573→  const etfConfigsQuery = useQuery({
+  1574→    queryKey: ['etf-configs'],
+  1575→    queryFn: async () => {
+  1576→      const res = await fetch('/api/etf-configs');
+  1577→      const data: ApiResponse<EtfConfigWithSnapshot[]> = await res.json();
+  1578→      if (!data.success) throw new Error(data.error ?? 'Failed to fetch ETF configs');
+  1579→      return data.data!;
+  1580→    },
+  1581→    staleTime: 5 * 60_000,
+  1582→  });
+  1583→
+  1584→  const cashAccountsQuery = useQuery({
+  1585→    queryKey: ['cash-accounts'],
+  1586→    queryFn: async () => {
+  1587→      const res = await fetch('/api/cash-accounts');
+  1588→      const data: ApiResponse<CashAccountDisplay[]> = await res.json();
+  1589→      if (!data.success) throw new Error(data.error ?? 'Failed to fetch cash accounts');
+  1590→      return data.data!;
+  1591→    },
+  1592→    staleTime: 30_000,
+  1593→  });
+  1594→
+  1595→  const executionOrdersQuery = useQuery({
+  1596→    queryKey: ['execution-orders'],
+  1597→    queryFn: async () => {
+  1598→      const res = await fetch('/api/execution-orders');
+  1599→      const data: ApiResponse<ExecutionOrderDisplay[]> = await res.json();
+  1600→      if (!data.success) throw new Error(data.error ?? 'Failed to fetch execution orders');
+  1601→      return data.data!;
+  1602→    },
+  1603→    staleTime: 15_000,
+  1604→  });
+  1605→
+  1606→  const cashLedgerQuery = useQuery({
+  1607→    queryKey: ['cash-ledger', 10],
+  1608→    queryFn: async () => {
+  1609→      const res = await fetch('/api/cash-ledger?limit=10');
+  1610→      const data: ApiResponse<CashLedgerDisplay[]> = await res.json();
+  1611→      if (!data.success) throw new Error(data.error ?? 'Failed to fetch cash ledger');
+  1612→      return data.data!;
+  1613→    },
+  1614→    staleTime: 30_000,
+  1615→  });
+  1616→
+  1617→  const releasePlansQuery = useQuery({
+  1618→    queryKey: ['release-plans'],
+  1619→    queryFn: async () => {
+  1620→      const res = await fetch('/api/release-plans');
+  1621→      const data: ApiResponse<ReleasePlanDisplay[]> = await res.json();
+  1622→      if (!data.success) throw new Error(data.error ?? 'Failed to fetch release plans');
+  1623→      return data.data!;
+  1624→    },
+  1625→    staleTime: 60_000,
+  1626→  });
+  1627→
+  1628→  const dashboard = dashboardQuery.data ?? null;
+  1629→  const etfConfigs = etfConfigsQuery.data ?? [];
+  1630→
+  1631→  return (
+  1632→    <div className="space-y-4">
+  1633→      {/* Section 1: Weekly Task Status Bar */}
+  1634→      {dashboardQuery.isLoading ? (
+  1635→        <WeeklyTaskStatusBarSkeleton />
+  1636→      ) : (
+  1637→        <WeeklyTaskStatusBar dashboard={dashboard} />
+  1638→      )}
+  1639→
+  1640→      {/* Section 2: Data Quality Gate Summary */}
+  1641→      <DataQualityGateCard
+  1642→        qualityData={dataQualityQuery.data ?? null}
+  1643→        etfConfigs={etfConfigs}
+  1644→        isLoading={dataQualityQuery.isLoading}
+  1645→        isError={dataQualityQuery.isError}
+  1646→      />
+  1647→
+  1648→      {/* Section 3: Portfolio Overview — Holdings + Cash side by side */}
+  1649→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  1650→        <PortfolioHoldingsTable
+  1651→          etfConfigs={etfConfigs}
+  1652→          isLoading={etfConfigsQuery.isLoading}
+  1653→          isError={etfConfigsQuery.isError}
+  1654→        />
+  1655→        <CashAccountsSummary
+  1656→          accounts={cashAccountsQuery.data ?? []}
+  1657→          isLoading={cashAccountsQuery.isLoading}
+  1658→          isError={cashAccountsQuery.isError}
+  1659→        />
+  1660→      </div>
+  1661→
+  1662→      {/* Section 4: Weekly Execution Summary */}
+  1663→      <WeeklyExecutionSummary
+  1664→        dashboard={dashboard}
+  1665→        executionOrders={executionOrdersQuery.data ?? []}
+  1666→        etfConfigs={etfConfigs}
+  1667→        isLoading={dashboardQuery.isLoading || executionOrdersQuery.isLoading}
+  1668→        isError={dashboardQuery.isError || executionOrdersQuery.isError}
+  1669→      />
+  1670→
+  1671→      {/* Section 5: Red Line Audit — only renders when blocked/rejected orders exist */}
+  1672→      <RedLineAuditCard
+  1673→        executionOrders={executionOrdersQuery.data ?? []}
+  1674→        etfConfigs={etfConfigs}
+  1675→        isLoading={executionOrdersQuery.isLoading}
+  1676→      />
+  1677→
+  1678→      {/* Section 6: Cash Flow */}
+  1679→      <CashFlowCard
+  1680→        ledgerEntries={cashLedgerQuery.data ?? []}
+  1681→        isLoading={cashLedgerQuery.isLoading}
+  1682→        isError={cashLedgerQuery.isError}
+  1683→      />
+  1684→
+  1685→      {/* Section 6.5: Calculation History */}
+  1686→      <CalculationHistoryCard />
+  1687→
+  1688→      {/* Section 7: Release Plans */}
+  1689→      <ReleasePlansCard
+  1690→        plans={releasePlansQuery.data ?? []}
+  1691→        isLoading={releasePlansQuery.isLoading}
+  1692→        isError={releasePlansQuery.isError}
+  1693→      />
+  1694→    </div>
+  1695→  );
+  1696→}
