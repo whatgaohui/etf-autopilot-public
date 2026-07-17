@@ -23,8 +23,11 @@ import {
   Clock,
   CheckCircle2,
   XCircle,
+  PieChart as PieChartIcon,
+  BarChart3,
 } from 'lucide-react';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
+import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 import { toast } from 'sonner';
 
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
@@ -134,6 +137,23 @@ const RELEASE_STATE_CONFIG: Record<
 const RELEASE_TYPE_LABELS: Record<string, string> = {
   qdii_premium: 'QDII溢价释放',
   rebalance_reserve: '再平衡备用金释放',
+};
+
+const ETF_CHART_COLORS: Record<string, string> = {
+  '510300': '#10b981',
+  '510500': '#14b8a6',
+  '588000': '#06b6d4',
+  '513300': '#8b5cf6',
+  '513500': '#f59e0b',
+  '512890': '#f97316',
+};
+const CASH_CHART_COLOR = '#6b7280';
+
+const EXECUTION_MODE_BADGE_CLASS: Record<ExecutionMode, string> = {
+  immediate: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 border-0',
+  staged: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300 border-0',
+  wait_pullback: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 border-0',
+  base_only: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300 border-0',
 };
 
 // ============================================================
@@ -594,6 +614,219 @@ function DataQualityGateCard({
 }
 
 // ============================================================
+// Section 2.5: Portfolio Allocation Donut Chart
+// ============================================================
+
+interface DonutChartDataItem {
+  code: string;
+  name: string;
+  value: number;
+  color: string;
+  currentPercent: number;
+  targetPercent: number;
+  actualPercent: number;
+  deviation: number | null;
+}
+
+interface DonutTooltipPayloadItem {
+  name: string;
+  value: number;
+  payload: DonutChartDataItem;
+}
+
+function DonutTooltipContent({ active, payload }: { active?: boolean; payload?: DonutTooltipPayloadItem[] }) {
+  if (!active || !payload?.length) return null;
+  const item = payload[0].payload;
+  return (
+    <div className="rounded-lg border border-border/60 bg-popover px-3 py-2 shadow-lg">
+      <div className="flex items-center gap-1.5">
+        <span className="size-2.5 rounded-sm" style={{ backgroundColor: item.color }} />
+        <span className="text-xs font-medium">{item.name}</span>
+      </div>
+      <div className="text-[11px] text-muted-foreground mt-1 font-mono">
+        {formatMoney(item.value)} · {item.actualPercent.toFixed(2)}%
+      </div>
+    </div>
+  );
+}
+
+function PortfolioAllocationDonut({
+  etfConfigs,
+  cashAccounts,
+  isLoading,
+}: {
+  etfConfigs: EtfConfigWithSnapshot[];
+  cashAccounts: CashAccountDisplay[];
+  isLoading: boolean;
+}) {
+  const { chartData, totalPortfolio } = useMemo(() => {
+    const activeEtfs = etfConfigs.filter(e => e.latestSnapshot && !e.isBlacklisted);
+    const cashTotal = cashAccounts.reduce((sum, a) => sum + (a.balanceYuan ?? 0), 0);
+    const equityTotal = activeEtfs.reduce((sum, e) => sum + (e.latestSnapshot!.marketValueYuan), 0);
+    const total = equityTotal + cashTotal;
+
+    const data: DonutChartDataItem[] = activeEtfs.map(etf => {
+      const currentPct = total > 0 ? (etf.latestSnapshot!.marketValueYuan / total) * 100 : 0;
+      const targetPct = etf.targetRatioPercent ?? 0;
+      return {
+        code: etf.code,
+        name: etf.name,
+        value: etf.latestSnapshot!.marketValueYuan,
+        color: ETF_CHART_COLORS[etf.code] ?? '#6b7280',
+        currentPercent: etf.latestSnapshot!.currentRatioPercent ?? 0,
+        targetPercent: targetPct,
+        actualPercent: currentPct,
+        deviation: currentPct - targetPct,
+      };
+    });
+
+    if (cashTotal > 0) {
+      const cashPct = total > 0 ? (cashTotal / total) * 100 : 0;
+      data.push({
+        code: 'cash',
+        name: '现金',
+        value: cashTotal,
+        color: CASH_CHART_COLOR,
+        currentPercent: cashPct,
+        targetPercent: 0,
+        actualPercent: cashPct,
+        deviation: cashPct,
+      });
+    }
+
+    return { chartData: data, totalPortfolio: total };
+  }, [etfConfigs, cashAccounts]);
+
+  if (isLoading) {
+    return (
+      <FadeInUp>
+        <Card>
+          <CardHeader className="pb-2">
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-3 w-40" />
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="flex flex-col md:flex-row gap-4">
+              <Skeleton className="w-full md:w-[200px] h-[200px] rounded-lg" />
+              <div className="flex-1 space-y-2">
+                {Array.from({ length: 7 }).map((_, i) => (
+                  <Skeleton key={i} className="h-6 w-full" />
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </FadeInUp>
+    );
+  }
+
+  return (
+    <FadeInUp>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-1.5">
+            <PieChartIcon className="size-4 text-teal-500" />
+            资产配置概览
+          </CardTitle>
+          <CardDescription className="text-xs">当前持仓 vs 目标配比</CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          {chartData.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-8">暂无持仓数据</p>
+          ) : (
+            <div className="flex flex-col md:flex-row gap-4 items-center md:items-start">
+              {/* Donut Chart */}
+              <div className="w-full md:w-[200px] shrink-0">
+                <div className="relative">
+                  <ResponsiveContainer width="100%" height={200}>
+                    <PieChart>
+                      <Pie
+                        data={chartData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius="60%"
+                        outerRadius="85%"
+                        paddingAngle={2}
+                        dataKey="value"
+                        stroke="none"
+                      >
+                        {chartData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <RechartsTooltip content={<DonutTooltipContent />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  {/* Center text */}
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="text-center">
+                      <div className="text-[10px] text-muted-foreground">总资产</div>
+                      <div className="text-xs font-bold font-mono tabular-nums">
+                        {formatMoney(totalPortfolio)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Legend */}
+              <div className="flex-1 min-w-0 w-full">
+                {/* Header */}
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground mb-1.5 px-0.5">
+                  <span className="w-2.5 shrink-0" />
+                  <span className="flex-1 min-w-0">名称</span>
+                  <span className="w-12 text-right font-mono">当前</span>
+                  <span className="w-12 text-right font-mono hidden sm:block">目标</span>
+                  <span className="w-14 text-right font-mono hidden sm:block">偏离</span>
+                </div>
+                {/* Rows */}
+                <div className="space-y-1">
+                  {chartData.map(item => {
+                    const devColor = item.deviation == null
+                      ? 'text-muted-foreground'
+                      : Math.abs(item.deviation) <= 3
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : Math.abs(item.deviation) <= 5
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-red-600 dark:text-red-400';
+
+                    return (
+                      <div
+                        key={item.code}
+                        className="flex items-center gap-2 text-[11px] rounded-md px-0.5 py-1 hover:bg-muted/40 transition-colors"
+                      >
+                        <span
+                          className="size-2.5 rounded-sm shrink-0"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span className="flex-1 min-w-0 truncate font-medium">
+                          {item.code === 'cash' ? '现金' : item.name}
+                        </span>
+                        <span className="w-12 text-right font-mono tabular-nums">
+                          {item.actualPercent.toFixed(1)}%
+                        </span>
+                        <span className="w-12 text-right font-mono tabular-nums text-muted-foreground hidden sm:block">
+                          {item.code === 'cash' ? '—' : `${item.targetPercent.toFixed(1)}%`}
+                        </span>
+                        <span className={`w-14 text-right font-mono tabular-nums font-medium hidden sm:block ${devColor}`}>
+                          {item.deviation == null
+                            ? '—'
+                            : `${item.deviation >= 0 ? '+' : ''}${item.deviation.toFixed(1)}%`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </FadeInUp>
+  );
+}
+
+// ============================================================
 // Section 3a: Portfolio Holdings Table
 // ============================================================
 
@@ -829,6 +1062,93 @@ function CashAccountsSummary({
 }
 
 // ============================================================
+// Section 3.5: Weekly Budget Utilization
+// ============================================================
+
+function WeeklyBudgetUtilization({
+  dashboard,
+  executionOrders,
+}: {
+  dashboard: DashboardData | null;
+  executionOrders: ExecutionOrderDisplay[];
+}) {
+  const { budget, allocated, unallocated, utilizationPct, barColor } = useMemo(() => {
+    const budgetYuan = dashboard?.latestCalculation?.budgetYuan ?? 7000;
+    const latestCalcId = dashboard?.latestCalculation?.calculationId;
+
+    // Sum allocated buy amounts from orders for the latest calculation
+    const calcOrders = latestCalcId
+      ? executionOrders.filter(o => o.calculationId === latestCalcId && o.side === 'buy')
+      : [];
+    const allocatedYuan = calcOrders.reduce((sum, o) => sum + (o.plannedAmountYuan ?? 0), 0);
+    const unallocYuan = budgetYuan - allocatedYuan;
+    const pct = budgetYuan > 0 ? (allocatedYuan / budgetYuan) * 100 : 0;
+
+    const color = pct > 100 ? 'bg-red-500' : pct >= 70 ? 'bg-emerald-500' : 'bg-amber-500';
+
+    return {
+      budget: budgetYuan,
+      allocated: allocatedYuan,
+      unallocated: unallocYuan,
+      utilizationPct: pct,
+      barColor: color,
+    };
+  }, [dashboard, executionOrders]);
+
+  return (
+    <FadeInUp>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-1.5">
+            <BarChart3 className="size-4 text-emerald-500" />
+            本周预算使用
+          </CardTitle>
+          <CardDescription className="text-xs">
+            周预算 {formatMoney(budget)} · 已分配 {formatMoney(allocated)}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="space-y-2">
+            {/* Progress bar */}
+            <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+                style={{ width: `${Math.min(utilizationPct, 100)}%` }}
+              />
+            </div>
+            {/* Stats row */}
+            <div className="flex items-center justify-between text-[11px]">
+              <div className="flex items-center gap-3">
+                <span className="text-muted-foreground">
+                  已分配 <span className="font-mono font-medium text-foreground">{formatMoney(allocated)}</span>
+                </span>
+                <span className="text-muted-foreground">
+                  未分配{' '}
+                  <span className={`font-mono font-medium ${unallocated >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}`}>
+                    {formatMoney(unallocated)}
+                  </span>
+                </span>
+              </div>
+              <span
+                className={`font-mono font-bold tabular-nums ${
+                  utilizationPct > 100
+                    ? 'text-red-600 dark:text-red-400'
+                    : utilizationPct >= 70
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                }`}
+              >
+                {utilizationPct.toFixed(1)}%
+              </span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </FadeInUp>
+  );
+}
+
+// ============================================================
 // Section 4: Weekly Execution Summary
 // ============================================================
 
@@ -850,6 +1170,12 @@ function WeeklyExecutionSummary({
   const etfNameMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const e of etfConfigs) map.set(e.code, e.name);
+    return map;
+  }, [etfConfigs]);
+
+  const etfConfigMap = useMemo(() => {
+    const map = new Map<string, EtfConfigWithSnapshot>();
+    for (const e of etfConfigs) map.set(e.code, e);
     return map;
   }, [etfConfigs]);
 
@@ -994,6 +1320,10 @@ function WeeklyExecutionSummary({
                 {calcOrders.map((order) => {
                   const statusCfg = ORDER_STATUS_CONFIG[order.status];
                   const etfName = etfNameMap.get(order.etfCode) ?? order.etfCode;
+                  const etfConfig = etfConfigMap.get(order.etfCode);
+                  const orderDeviation = etfConfig?.latestSnapshot && etfConfig.targetRatioPercent != null
+                    ? (etfConfig.latestSnapshot.currentRatioPercent ?? 0) - etfConfig.targetRatioPercent
+                    : null;
                   const isActionable = order.status === 'ready_for_review';
                   const isBlocked = order.status === 'blocked';
                   const isExecuted = order.status === 'executed';
@@ -1055,19 +1385,33 @@ function WeeklyExecutionSummary({
                                 {order.etfCode}
                               </span>
                               {/* Execution mode badge */}
-                              <Badge variant="outline" className="text-[9px] font-mono px-1 py-0 h-4">
+                              <Badge className={`${EXECUTION_MODE_BADGE_CLASS[order.executionMode]} text-[9px] font-mono px-1.5 py-0 h-4`}>
                                 {EXECUTION_MODE_LABELS[order.executionMode]}
                               </Badge>
                             </div>
-                            <div className="flex items-center gap-2 mt-0.5 text-[11px] text-muted-foreground">
-                              <span>
+                            <div className="flex items-center gap-2 mt-0.5 text-[11px]">
+                              <span className={order.side === 'buy'
+                                ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                                : 'text-red-600 dark:text-red-400 font-medium'}>
                                 {order.side === 'buy' ? '买入' : '卖出'}{' '}
-                                {formatMoney(order.plannedAmountYuan)}
+                                <span className="font-mono">{formatMoney(order.plannedAmountYuan)}</span>
                               </span>
                               {order.plannedSharesActual != null && order.plannedSharesActual > 0 && (
-                                <span className="font-mono">
+                                <span className="font-mono text-muted-foreground">
                                   ≈ {order.plannedSharesActual.toLocaleString('zh-CN')} 份
                                 </span>
+                              )}
+                              {orderDeviation != null && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className={`text-[10px] font-mono ${getDeviationColor(orderDeviation)}`}>
+                                      偏离 {orderDeviation >= 0 ? '+' : ''}{orderDeviation.toFixed(2)}%
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p className="text-[10px]">当前配比 vs 目标配比</p>
+                                  </TooltipContent>
+                                </Tooltip>
                               )}
                             </div>
                           </div>
@@ -1705,6 +2049,13 @@ export function OverviewTab() {
         isError={dataQualityQuery.isError}
       />
 
+      {/* Section 2.5: Portfolio Allocation Donut Chart */}
+      <PortfolioAllocationDonut
+        etfConfigs={etfConfigs}
+        cashAccounts={cashAccountsQuery.data ?? []}
+        isLoading={etfConfigsQuery.isLoading || cashAccountsQuery.isLoading}
+      />
+
       {/* Section 3: Portfolio Overview — Holdings + Cash side by side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <PortfolioHoldingsTable
@@ -1718,6 +2069,12 @@ export function OverviewTab() {
           isError={cashAccountsQuery.isError}
         />
       </div>
+
+      {/* Section 3.5: Weekly Budget Utilization */}
+      <WeeklyBudgetUtilization
+        dashboard={dashboard}
+        executionOrders={executionOrdersQuery.data ?? []}
+      />
 
       {/* Section 4: Weekly Execution Summary */}
       <WeeklyExecutionSummary

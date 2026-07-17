@@ -13,6 +13,8 @@ import {
   BarChart,
   Bar,
   Cell,
+  LineChart,
+  Line,
 } from 'recharts';
 import {
   TrendingUp,
@@ -26,12 +28,24 @@ import {
   BarChart3,
   ChevronRight,
   AlertTriangle,
+  ArrowUp,
+  ArrowDown,
+  TableProperties,
 } from 'lucide-react';
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
+import { Progress } from '@/components/ui/progress';
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableHead,
+  TableRow,
+  TableCell,
+} from '@/components/ui/table';
 import {
   Tooltip as ShadcnTooltip,
   TooltipContent,
@@ -301,8 +315,36 @@ function EtfSelector({
   );
 }
 
-/** 30-day price trend chart */
-function PriceTrendChart({ data }: { data: PricePoint[] }) {
+/** Time range selector pills */
+function TimeRangeSelector({ range, onRangeChange }: { range: number; onRangeChange: (r: number) => void }) {
+  const options = [
+    { label: '7日', value: 7 },
+    { label: '30日', value: 30 },
+    { label: '90日', value: 90 },
+  ];
+  return (
+    <div className="flex items-center gap-1.5">
+      {options.map(opt => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onRangeChange(opt.value)}
+          className={[
+            'rounded-full px-3 py-1 text-xs font-medium transition-all duration-200 border',
+            range === opt.value
+              ? 'bg-emerald-600 text-white border-emerald-600'
+              : 'bg-card border-border hover:border-emerald-300 hover:bg-emerald-50/50 dark:hover:bg-emerald-950/20',
+          ].join(' ')}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Price trend chart (variable time range) */
+function PriceTrendChart({ data, range }: { data: PricePoint[]; range: number }) {
   const isUp = data.length > 1 && data[data.length - 1].nav >= data[0].nav;
 
   return (
@@ -312,7 +354,7 @@ function PriceTrendChart({ data }: { data: PricePoint[] }) {
           <div>
             <CardTitle className="text-base flex items-center gap-2">
               <BarChart3 className="size-4 text-emerald-600" />
-              30日价格走势
+              {range}日价格走势
             </CardTitle>
             <CardDescription className="mt-1">模拟净值曲线（随机游走）</CardDescription>
           </div>
@@ -739,31 +781,268 @@ function DataQualityApiSection({ etfCode }: { etfCode: string }) {
   );
 }
 
-/** Technical State placeholder */
-function TechnicalStatePlaceholder() {
+// ─── Technical Indicator Calculations ──────────────────────────────────────────
+
+function calculateEMA(data: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const ema: number[] = [data[0]];
+  for (let i = 1; i < data.length; i++) {
+    ema.push(data[i] * k + ema[i - 1] * (1 - k));
+  }
+  return ema;
+}
+
+function calculateMACD(prices: number[]): { macd: number[]; signal: number[]; histogram: number[] } {
+  const ema12 = calculateEMA(prices, 12);
+  const ema26 = calculateEMA(prices, 26);
+  const macdLine = ema12.map((v, i) => v - ema26[i]);
+  const signalLine = calculateEMA(macdLine, 9);
+  const histogram = macdLine.map((v, i) => v - signalLine[i]);
+  return { macd: macdLine, signal: signalLine, histogram };
+}
+
+function calculateRSI(prices: number[], period = 14): number[] {
+  const rsi: number[] = [50];
+  for (let i = 1; i < prices.length; i++) {
+    if (i < period) { rsi.push(50); continue; }
+    let gains = 0, losses = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const diff = prices[j] - prices[j - 1];
+      if (diff > 0) gains += diff; else losses -= diff;
+    }
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    if (avgLoss === 0) rsi.push(100);
+    else {
+      const rs = avgGain / avgLoss;
+      rsi.push(100 - 100 / (1 + rs));
+    }
+  }
+  return rsi;
+}
+
+function calculateMA(prices: number[], period: number): number[] {
+  return prices.map((_, i) => {
+    if (i < period - 1) return NaN;
+    const slice = prices.slice(i - period + 1, i + 1);
+    return slice.reduce((a, b) => a + b, 0) / period;
+  });
+}
+
+interface MacdChartData {
+  date: string;
+  histogram: number;
+  macd: number;
+  signal: number;
+}
+
+function prepareChartData(priceData: PricePoint[], macdResult: ReturnType<typeof calculateMACD>): MacdChartData[] {
+  const last = 20;
+  const startIdx = Math.max(0, priceData.length - last);
+  const chartData: MacdChartData[] = [];
+  for (let i = startIdx; i < priceData.length; i++) {
+    chartData.push({
+      date: priceData[i].date,
+      histogram: Number(macdResult.histogram[i].toFixed(6)),
+      macd: Number(macdResult.macd[i].toFixed(6)),
+      signal: Number(macdResult.signal[i].toFixed(6)),
+    });
+  }
+  return chartData;
+}
+
+/** Technical Indicators Panel — MACD / RSI / MA */
+function TechnicalIndicatorsPanel({ priceData, meta }: { priceData: PricePoint[]; meta: EtfMeta }) {
+  const prices = priceData.map(p => p.nav);
+  const macdResult = calculateMACD(prices);
+  const rsiValues = calculateRSI(prices);
+  const ma20 = calculateMA(prices, 20);
+  const ma40 = calculateMA(prices, 40);
+
+  const lastIdx = prices.length - 1;
+  const currentMacd = macdResult.macd[lastIdx];
+  const currentSignal = macdResult.signal[lastIdx];
+  const currentHistogram = macdResult.histogram[lastIdx];
+  const currentRSI = rsiValues[lastIdx];
+  const currentMA20 = ma20[lastIdx];
+  const currentMA40 = ma40[lastIdx];
+
+  // Technical state based on MACD
+  const isBullish = currentMacd > currentSignal && currentHistogram > 0;
+  const isBearish = currentMacd < currentSignal && currentHistogram < 0;
+  const techState = isBullish ? 'bullish' : isBearish ? 'bearish' : 'neutral';
+  const techStateLabel = techState === 'bullish' ? '看多' : techState === 'bearish' ? '看空' : '中性';
+  const techStateColor = techState === 'bullish'
+    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+    : techState === 'bearish'
+      ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+      : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+
+  // RSI color
+  const rsiColor = currentRSI < 30
+    ? 'text-emerald-600'
+    : currentRSI > 70
+      ? 'text-red-500'
+      : 'text-amber-600';
+  const rsiLabel = currentRSI < 30 ? '超卖' : currentRSI > 70 ? '超买' : '正常';
+
+  // MA relationship
+  const maBullish = !isNaN(currentMA20) && !isNaN(currentMA40) && currentMA20 > currentMA40;
+
+  const chartData = prepareChartData(priceData, macdResult);
+
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2">
-          <Activity className="size-4 text-muted-foreground" />
-          技术指标
-        </CardTitle>
-        <CardDescription>MACD / RSI / 均线系统</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-col items-center justify-center py-10 text-center space-y-3">
-          <div className="size-14 rounded-xl bg-muted/50 flex items-center justify-center">
-            <Activity className="size-6 text-muted-foreground/40" />
-          </div>
+        <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm font-medium text-muted-foreground">技术指标模块开发中</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">Sprint 3 — MACD / RSI / 均线 / KDJ</p>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Activity className="size-4 text-muted-foreground" />
+              技术指标
+            </CardTitle>
+            <CardDescription>MACD / RSI / 均线系统</CardDescription>
           </div>
           <Badge variant="outline" className="text-[10px] gap-1">
             <ChevronRight className="size-3" />
-            E6 进度 0%
+            E6 进度 100%
           </Badge>
         </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {/* MACD Section */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium">MACD (12, 26, 9)</span>
+            <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${techStateColor}`}>
+              {techStateLabel}
+            </span>
+          </div>
+
+          {/* MACD value badges */}
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="text-muted-foreground">MACD:</span>
+            <span className={`font-mono font-medium ${currentMacd >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+              {currentMacd >= 0 ? '+' : ''}{currentMacd.toFixed(4)}
+            </span>
+            <span className="text-muted-foreground ml-2">Signal:</span>
+            <span className={`font-mono font-medium ${currentSignal >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+              {currentSignal >= 0 ? '+' : ''}{currentSignal.toFixed(4)}
+            </span>
+            <span className="text-muted-foreground ml-2">Hist:</span>
+            <span className={`font-mono font-medium ${currentHistogram >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+              {currentHistogram >= 0 ? '+' : ''}{currentHistogram.toFixed(4)}
+            </span>
+          </div>
+
+          {/* MACD Histogram Chart */}
+          <div className="h-[120px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <RechartsTooltip
+                  contentStyle={{
+                    fontSize: '10px',
+                    background: 'hsl(var(--card))',
+                    border: '1px solid hsl(var(--border))',
+                    borderRadius: '6px',
+                  }}
+                  formatter={(value: number, name: string) => {
+                    const label = name === 'histogram' ? '柱状' : name === 'macd' ? 'MACD' : 'Signal';
+                    return [value.toFixed(4), label];
+                  }}
+                />
+                <Bar dataKey="histogram" radius={[2, 2, 0, 0]}>
+                  {chartData.map((entry, index) => (
+                    <Cell key={`hist-${index}`} fill={entry.histogram >= 0 ? '#10b981' : '#ef4444'} />
+                  ))}
+                </Bar>
+                <Line
+                  type="monotone"
+                  dataKey="macd"
+                  stroke="#0d9488"
+                  dot={false}
+                  strokeWidth={1.5}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="signal"
+                  stroke="#f59e0b"
+                  dot={false}
+                  strokeWidth={1.5}
+                  strokeDasharray="3 2"
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* RSI + MA Section */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5">
+            <Gauge className="size-3.5 text-muted-foreground" />
+            <span className="text-xs font-medium">RSI / 均线系统</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            {/* RSI */}
+            <div className="rounded-lg border p-2.5 space-y-1">
+              <div className="text-[10px] text-muted-foreground">RSI (14)</div>
+              <div className="flex items-baseline gap-1.5">
+                <span className={`text-sm font-mono font-semibold ${rsiColor}`}>
+                  {currentRSI.toFixed(1)}
+                </span>
+                <span className={`text-[10px] ${rsiColor}`}>
+                  {rsiLabel}
+                </span>
+              </div>
+            </div>
+
+            {/* MA20 */}
+            <div className="rounded-lg border p-2.5 space-y-1">
+              <div className="text-[10px] text-muted-foreground">MA20</div>
+              <span className="text-sm font-mono font-semibold">
+                {isNaN(currentMA20) ? '—' : currentMA20.toFixed(4)}
+              </span>
+            </div>
+
+            {/* MA40 */}
+            <div className="rounded-lg border p-2.5 space-y-1">
+              <div className="text-[10px] text-muted-foreground">MA40</div>
+              <span className="text-sm font-mono font-semibold">
+                {isNaN(currentMA40) ? '—' : currentMA40.toFixed(4)}
+              </span>
+            </div>
+
+            {/* MA Relationship */}
+            <div className="rounded-lg border p-2.5 space-y-1">
+              <div className="text-[10px] text-muted-foreground">均线排列</div>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                maBullish
+                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                  : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+              }`}>
+                {maBullish ? '多头排列' : '空头排列'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        <p className="text-[10px] text-muted-foreground/60">数据来源: 模拟技术指标（仅供展示）</p>
       </CardContent>
     </Card>
   );
@@ -813,6 +1092,147 @@ function DataLineage({ meta }: { meta: EtfMeta }) {
   );
 }
 
+/** ETF Comparison Table — all 6 ETFs side by side */
+function EtfComparisonTable({ configs }: { configs: EtfConfigWithSnapshot[] }) {
+  if (configs.length === 0) return null;
+
+  const totalMarketValue = configs.reduce(
+    (sum, c) => sum + (c.latestSnapshot?.marketValueYuan ?? 0), 0
+  );
+
+  // Budget utilization: compare total holdings against a target (use 105% of current as reference ceiling)
+  const budgetTarget = totalMarketValue > 0 ? totalMarketValue * 1.05 : 1;
+  const budgetUtilPct = (totalMarketValue / budgetTarget) * 100;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              <TableProperties className="size-4 text-emerald-600" />
+              ETF 对比
+            </CardTitle>
+            <CardDescription className="mt-1">6 只 ETF 全景对比视图</CardDescription>
+          </div>
+          {/* Budget utilization indicator */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-muted-foreground whitespace-nowrap">组合预算利用率</span>
+            <div className="w-20">
+              <Progress
+                value={Math.min(100, budgetUtilPct)}
+                className="h-2"
+              />
+            </div>
+            <span className={`text-xs font-mono font-semibold ${budgetUtilPct > 95 ? 'text-red-600' : budgetUtilPct > 85 ? 'text-amber-600' : 'text-emerald-600'}`}>
+              {budgetUtilPct.toFixed(1)}%
+            </span>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="text-[10px] text-muted-foreground">ETF</TableHead>
+              <TableHead className="text-[10px] text-muted-foreground">类别</TableHead>
+              <TableHead className="text-[10px] text-muted-foreground text-right">目标比例</TableHead>
+              <TableHead className="text-[10px] text-muted-foreground text-right">当前市值</TableHead>
+              <TableHead className="text-[10px] text-muted-foreground text-right">实际比例</TableHead>
+              <TableHead className="text-[10px] text-muted-foreground text-right">偏离</TableHead>
+              <TableHead className="text-[10px] text-muted-foreground text-right">最新净值</TableHead>
+              <TableHead className="text-[10px] text-muted-foreground">估值状态</TableHead>
+              <TableHead className="text-[10px] text-muted-foreground text-right">质量分</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {configs.map(config => {
+              const m = ETF_METADATA[config.code];
+              if (!m) return null;
+              const valuation = generateMockValuation(m);
+              const quality = generateMockQuality(m);
+              const mv = config.latestSnapshot?.marketValueYuan ?? 0;
+              const actualPct = totalMarketValue > 0 ? (mv / totalMarketValue) * 100 : 0;
+              const deviation = actualPct - (config.targetRatioPercent ?? 0);
+              const absDeviation = Math.abs(deviation);
+              const devColor = absDeviation > 5
+                ? 'text-red-600 dark:text-red-400'
+                : absDeviation > 3
+                  ? 'text-amber-600 dark:text-amber-400'
+                  : 'text-muted-foreground';
+              const valLabel = valuation.pePercentile < 30 ? '低估' : valuation.pePercentile < 70 ? '中估' : '高估';
+              const valBg = valuation.pePercentile < 30
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                : valuation.pePercentile < 70
+                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                  : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
+              const qBg = quality.totalScore >= 80
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                : quality.totalScore >= 65
+                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                  : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
+
+              return (
+                <TableRow key={config.code}>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] text-muted-foreground">{config.code}</span>
+                      <span className="text-xs font-medium">{config.name.replace('ETF', '')}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${CATEGORY_COLORS[m.category] ?? ''}`}>{m.category}</span>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <span className="text-xs font-mono font-medium">{(config.targetRatioPercent ?? 0).toFixed(2)}%</span>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <span className="text-xs font-mono">{mv > 0 ? formatMoney(mv) : '—'}</span>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <span className="text-xs font-mono font-medium">{actualPct.toFixed(2)}%</span>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <span className={`text-xs font-mono font-semibold ${devColor}`}>
+                      {deviation > 0 ? '+' : ''}{deviation.toFixed(2)}%
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <span className="text-xs font-mono">{m.baseNav.toFixed(4)}</span>
+                  </TableCell>
+                  <TableCell>
+                    <Badge className={`text-[10px] px-1.5 py-0 ${valBg}`}>
+                      {valLabel} {valuation.pePercentile.toFixed(0)}%
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Badge className={`text-[10px] px-1.5 py-0 ${qBg}`}>
+                      {quality.totalScore}
+                    </Badge>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+        {/* Footer with totals + legend */}
+        <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border bg-muted/30 p-3">
+          <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+            <span>总市值: <span className="font-mono font-medium text-foreground">{formatMoney(totalMarketValue)}</span></span>
+            <Separator orientation="vertical" className="h-3 hidden sm:block" />
+            <span>数据更新时间: <span className="font-mono">{new Date().toLocaleString('zh-CN')}</span></span>
+          </div>
+          <div className="flex items-center gap-3 text-[10px]">
+            <span className="flex items-center gap-1"><span className="size-2 rounded-sm bg-emerald-500" /> 偏离 &lt;±3%</span>
+            <span className="flex items-center gap-1"><span className="size-2 rounded-sm bg-amber-500" /> 偏离 ±3-5%</span>
+            <span className="flex items-center gap-1"><span className="size-2 rounded-sm bg-red-500" /> 偏离 &gt;±5%</span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Main Trends Tab ────────────────────────────────────────────────────────────
 
 export function TrendsTab() {
@@ -838,10 +1258,11 @@ export function TrendsTab() {
   }, [etfConfigs]);
 
   const [selectedEtf, setSelectedEtf] = useState<string>('510300');
+  const [timeRange, setTimeRange] = useState<number>(30);
 
   // Generate mock data for selected ETF
   const meta = useMemo(() => ETF_METADATA[selectedEtf] ?? Object.values(ETF_METADATA)[0], [selectedEtf]);
-  const priceData = useMemo(() => generateMockPriceHistory(meta), [meta]);
+  const priceData = useMemo(() => generateMockPriceHistory(meta, timeRange), [meta, timeRange]);
   const valuationData = useMemo(() => generateMockValuation(meta), [meta]);
   const premiumData = useMemo(() => generateMockPremium(meta), [meta]);
   const dividendData = useMemo(() => generateMockDividend(meta), [meta]);
@@ -863,43 +1284,75 @@ export function TrendsTab() {
         </div>
       </FadeInUp>
 
-      {/* Current ETF info banner */}
-      {currentConfig && (
-        <FadeInUp delay={0.05}>
-          <div className="rounded-lg border bg-card p-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
-            <div>
-              <span className="text-muted-foreground">代码</span>
-              <span className="ml-1.5 font-mono font-semibold">{currentConfig.code}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">名称</span>
-              <span className="ml-1.5 font-medium">{currentConfig.name}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">目标比例</span>
-              <span className="ml-1.5 font-mono font-semibold text-emerald-600">{(currentConfig.targetRatioPercent ?? 0).toFixed(2)}%</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">最新市值</span>
-              <span className="ml-1.5 font-mono">
-                {currentConfig.latestSnapshot ? formatMoney(currentConfig.latestSnapshot.marketValueYuan) : '—'}
-              </span>
-            </div>
-            {currentConfig.latestSnapshot && (
+      {/* Current ETF info banner — enhanced */}
+      {currentConfig && (() => {
+        const q = generateMockQuality(meta);
+        const priceChange = priceData.length >= 2
+          ? ((priceData[priceData.length - 1].nav - priceData[0].nav) / priceData[0].nav * 100)
+          : 0;
+        return (
+          <FadeInUp delay={0.05}>
+            <div className="rounded-lg border bg-card p-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="font-mono font-semibold">{currentConfig.code}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${CATEGORY_COLORS[meta.category] ?? ''}`}>{meta.category}</span>
+              </div>
+              <Separator orientation="vertical" className="h-4 hidden sm:block" />
               <div>
-                <span className="text-muted-foreground">快照日</span>
+                <span className="text-muted-foreground">名称</span>
+                <span className="ml-1.5 font-medium">{currentConfig.name}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">目标比例</span>
+                <span className="ml-1.5 font-mono font-semibold text-emerald-600">{(currentConfig.targetRatioPercent ?? 0).toFixed(2)}%</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">最新市值</span>
                 <span className="ml-1.5 font-mono">
-                  {new Date(currentConfig.latestSnapshot.snapshotDate).toLocaleDateString('zh-CN')}
+                  {currentConfig.latestSnapshot ? formatMoney(currentConfig.latestSnapshot.marketValueYuan) : '—'}
                 </span>
               </div>
-            )}
-          </div>
-        </FadeInUp>
-      )}
+              {currentConfig.latestSnapshot && (
+                <div>
+                  <span className="text-muted-foreground">快照日</span>
+                  <span className="ml-1.5 font-mono">
+                    {new Date(currentConfig.latestSnapshot.snapshotDate).toLocaleDateString('zh-CN')}
+                  </span>
+                </div>
+              )}
+              <Separator orientation="vertical" className="h-4 hidden sm:block" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-muted-foreground">质量</span>
+                <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-mono font-semibold ${
+                  q.totalScore >= 80 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                  : q.totalScore >= 65 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                  : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                }`}>{q.totalScore}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">趋势</span>
+                <span className={`inline-flex items-center gap-0.5 font-mono text-[10px] font-semibold ${priceChange >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                  {priceChange >= 0 ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />}
+                  {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}%
+                </span>
+              </div>
+            </div>
+          </FadeInUp>
+        );
+      })()}
 
-      {/* Price Trend Chart — full width */}
+      {/* Time Range Selector + Price Trend Chart — full width */}
       <FadeInUp delay={0.1}>
-        <PriceTrendChart data={priceData} />
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="size-3.5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">时间范围</span>
+            </div>
+            <TimeRangeSelector range={timeRange} onRangeChange={setTimeRange} />
+          </div>
+          <PriceTrendChart data={priceData} range={timeRange} />
+        </div>
       </FadeInUp>
 
       {/* Valuation + Premium / Dividend — 2 col on desktop */}
@@ -925,7 +1378,7 @@ export function TrendsTab() {
           <QualityScoreDisplay quality={qualityData} />
         </FadeInUp>
         <FadeInUp delay={0.3}>
-          <TechnicalStatePlaceholder />
+          <TechnicalIndicatorsPanel priceData={priceData} meta={meta} />
         </FadeInUp>
       </div>
 
@@ -937,6 +1390,11 @@ export function TrendsTab() {
       {/* Data Lineage */}
       <FadeInUp delay={0.4}>
         <DataLineage meta={meta} />
+      </FadeInUp>
+
+      {/* ETF Comparison Table */}
+      <FadeInUp delay={0.45}>
+        <EtfComparisonTable configs={etfConfigs} />
       </FadeInUp>
     </div>
   );

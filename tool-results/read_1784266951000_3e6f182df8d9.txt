@@ -1,0 +1,943 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import { useState, useMemo } from 'react';
+     4→     4→import { useQuery } from '@tanstack/react-query';
+     5→     5→import {
+     6→     6→  AreaChart,
+     7→     7→  Area,
+     8→     8→  XAxis,
+     9→     9→  YAxis,
+    10→    10→  CartesianGrid,
+    11→    11→  Tooltip as RechartsTooltip,
+    12→    12→  ResponsiveContainer,
+    13→    13→  BarChart,
+    14→    14→  Bar,
+    15→    15→  Cell,
+    16→    16→} from 'recharts';
+    17→    17→import {
+    18→    18→  TrendingUp,
+    19→    19→  TrendingDown,
+    20→    20→  Shield,
+    21→    21→  Activity,
+    22→    22→  Database,
+    23→    23→  Clock,
+    24→    24→  Info,
+    25→    25→  Gauge,
+    26→    26→  BarChart3,
+    27→    27→  ChevronRight,
+    28→    28→  AlertTriangle,
+    29→    29→} from 'lucide-react';
+    30→    30→
+    31→    31→import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+    32→    32→import { Badge } from '@/components/ui/badge';
+    33→    33→import { Skeleton } from '@/components/ui/skeleton';
+    34→    34→import { Separator } from '@/components/ui/separator';
+    35→    35→import {
+    36→    36→  Tooltip as ShadcnTooltip,
+    37→    37→  TooltipContent,
+    38→    38→  TooltipProvider,
+    39→    39→  TooltipTrigger,
+    40→    40→} from '@/components/ui/tooltip';
+    41→    41→
+    42→    42→import type { EtfConfigWithSnapshot, ApiResponse, DataQualityLogDisplay } from '@/lib/types';
+    43→    43→import { FadeInUp } from '@/lib/motion';
+    44→    44→
+    45→    45→// ─── Constants & Types ──────────────────────────────────────────────────────────
+    46→    46→
+    47→    47→interface EtfMeta {
+    48→    48→  code: string;
+    49→    49→  name: string;
+    50→    50→  category: string;
+    51→    51→  baseNav: number;       // approximate current NAV for random walk
+    52→    52→  volatility: number;    // daily volatility for mock data
+    53→    53→  isQDII: boolean;
+    54→    54→  isDividend: boolean;
+    55→    55→  peBase: number;        // base PE for mock percentile
+    56→    56→  pbBase: number;        // base PB for mock percentile
+    57→    57→}
+    58→    58→
+    59→    59→const ETF_METADATA: Record<string, EtfMeta> = {
+    60→    60→  '510300': { code: '510300', name: '沪深300ETF', category: 'A股宽基', baseNav: 4.05, volatility: 0.012, isQDII: false, isDividend: false, peBase: 12.5, pbBase: 1.45 },
+    61→    61→  '510500': { code: '510500', name: '中证500ETF', category: 'A股宽基', baseNav: 6.20, volatility: 0.015, isQDII: false, isDividend: false, peBase: 22.8, pbBase: 1.78 },
+    62→    62→  '588000': { code: '588000', name: '科创50ETF', category: 'A股宽基', baseNav: 0.95, volatility: 0.020, isQDII: false, isDividend: false, peBase: 35.2, pbBase: 3.65 },
+    63→    63→  '513300': { code: '513300', name: '纳斯达克100ETF', category: 'QDII', baseNav: 2.35, volatility: 0.016, isQDII: true, isDividend: false, peBase: 28.5, pbBase: 5.20 },
+    64→    64→  '513500': { code: '513500', name: '标普500ETF', category: 'QDII', baseNav: 5.80, volatility: 0.010, isQDII: true, isDividend: false, peBase: 24.0, pbBase: 4.30 },
+    65→    65→  '512890': { code: '512890', name: '红利低波ETF', category: '红利', baseNav: 1.55, volatility: 0.009, isQDII: false, isDividend: true, peBase: 8.5, pbBase: 1.05 },
+    66→    66→};
+    67→    67→
+    68→    68→const CATEGORY_COLORS: Record<string, string> = {
+    69→    69→  'A股宽基': 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400',
+    70→    70→  'domestic': 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400',
+    71→    71→  'QDII': 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400',
+    72→    72→  '红利': 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+    73→    73→  'dividend': 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+    74→    74→};
+    75→    75→
+    76→    76→const QUALITY_DIMENSIONS = [
+    77→    77→  { key: 'freshness', label: '新鲜度', max: 25, icon: Clock },
+    78→    78→  { key: 'consistency', label: '一致性', max: 30, icon: Shield },
+    79→    79→  { key: 'completeness', label: '完整性', max: 20, icon: Database },
+    80→    80→  { key: 'abnormal', label: '异常检测', max: 15, icon: AlertTriangle },
+    81→    81→  { key: 'sourceHealth', label: '源健康', max: 10, icon: Activity },
+    82→    82→] as const;
+    83→    83→
+    84→    84→// ─── Mock Data Generators ───────────────────────────────────────────────────────
+    85→    85→
+    86→    86→/** Seeded random for deterministic mock data per ETF */
+    87→    87→function seededRandom(seed: number) {
+    88→    88→  let s = seed;
+    89→    89→  return () => {
+    90→    90→    s = (s * 16807 + 0) % 2147483647;
+    91→    91→    return s / 2147483647;
+    92→    92→  };
+    93→    93→}
+    94→    94→
+    95→    95→interface PricePoint {
+    96→    96→  date: string;
+    97→    97→  nav: number;
+    98→    98→  change: number;
+    99→    99→}
+   100→   100→
+   101→   101→function generateMockPriceHistory(meta: EtfMeta, days = 30): PricePoint[] {
+   102→   102→  const rng = seededRandom(meta.code.split('').reduce((a, c) => a + c.charCodeAt(0), 0));
+   103→   103→  const points: PricePoint[] = [];
+   104→   104→  let price = meta.baseNav * (0.95 + rng() * 0.10);
+   105→   105→  const now = new Date();
+   106→   106→
+   107→   107→  for (let i = days; i >= 0; i--) {
+   108→   108→    const d = new Date(now);
+   109→   109→    d.setDate(d.getDate() - i);
+   110→   110→    // Skip weekends
+   111→   111→    if (d.getDay() === 0 || d.getDay() === 6) continue;
+   112→   112→
+   113→   113→    const change = (rng() - 0.48) * meta.volatility * price;
+   114→   114→    price = Math.max(price * 0.8, price + change);
+   115→   115→    points.push({
+   116→   116→      date: `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}`,
+   117→   117→      nav: Number(price.toFixed(4)),
+   118→   118→      change: Number(((change / price) * 100).toFixed(2)),
+   119→   119→    });
+   120→   120→  }
+   121→   121→  return points;
+   122→   122→}
+   123→   123→
+   124→   124→interface ValuationData {
+   125→   125→  pePercentile: number;
+   126→   126→  peValue: number;
+   127→   127→  pbPercentile: number;
+   128→   128→  pbValue: number;
+   129→   129→  pePercentile1y: number;
+   130→   130→  pePercentile3y: number;
+   131→   131→  pePercentile5y: number;
+   132→   132→}
+   133→   133→
+   134→   134→function generateMockValuation(meta: EtfMeta): ValuationData {
+   135→   135→  const rng = seededRandom(meta.code.split('').reduce((a, c) => a + c.charCodeAt(0), 0) + 100);
+   136→   136→  return {
+   137→   137→    pePercentile: Number((30 + rng() * 60).toFixed(1)),
+   138→   138→    peValue: Number((meta.peBase * (0.8 + rng() * 0.4)).toFixed(2)),
+   139→   139→    pbPercentile: Number((25 + rng() * 65).toFixed(1)),
+   140→   140→    pbValue: Number((meta.pbBase * (0.85 + rng() * 0.3)).toFixed(2)),
+   141→   141→    pePercentile1y: Number((20 + rng() * 70).toFixed(1)),
+   142→   142→    pePercentile3y: Number((25 + rng() * 60).toFixed(1)),
+   143→   143→    pePercentile5y: Number((30 + rng() * 55).toFixed(1)),
+   144→   144→  };
+   145→   145→}
+   146→   146→
+   147→   147→interface PremiumData {
+   148→   148→  premium: number;
+   149→   149→  nav: number;
+   150→   150→  iopv: number;
+   151→   151→  status: 'normal' | 'elevated' | 'high';
+   152→   152→}
+   153→   153→
+   154→   154→function generateMockPremium(meta: EtfMeta): PremiumData | null {
+   155→   155→  if (!meta.isQDII) return null;
+   156→   156→  const rng = seededRandom(meta.code.split('').reduce((a, c) => a + c.charCodeAt(0), 0) + 200);
+   157→   157→  const premium = Number((rng() * 8 - 1).toFixed(2));
+   158→   158→  const nav = meta.baseNav;
+   159→   159→  const iopv = Number((nav * (1 - premium / 100)).toFixed(4));
+   160→   160→  const status = premium > 5 ? 'high' : premium > 2 ? 'elevated' : 'normal';
+   161→   161→  return { premium, nav, iopv, status };
+   162→   162→}
+   163→   163→
+   164→   164→interface DividendData {
+   165→   165→  yieldPct: number;
+   166→   166→  payoutRatio: number;
+   167→   167→  dividendPer10k: number;
+   168→   168→  exDate: string;
+   169→   169→}
+   170→   170→
+   171→   171→function generateMockDividend(meta: EtfMeta): DividendData | null {
+   172→   172→  if (!meta.isDividend) return null;
+   173→   173→  const rng = seededRandom(meta.code.split('').reduce((a, c) => a + c.charCodeAt(0), 0) + 300);
+   174→   174→  const yieldPct = Number((3.5 + rng() * 3).toFixed(2));
+   175→   175→  return {
+   176→   176→    yieldPct,
+   177→   177→    payoutRatio: Number((50 + rng() * 30).toFixed(1)),
+   178→   178→    dividendPer10k: Number((meta.baseNav * yieldPct / 100).toFixed(2)),
+   179→   179→    exDate: '2025-01-15',
+   180→   180→  };
+   181→   181→}
+   182→   182→
+   183→   183→interface QualityDimensions {
+   184→   184→  freshness: number;
+   185→   185→  consistency: number;
+   186→   186→  completeness: number;
+   187→   187→  abnormal: number;
+   188→   188→  sourceHealth: number;
+   189→   189→  totalScore: number;
+   190→   190→}
+   191→   191→
+   192→   192→function generateMockQuality(meta: EtfMeta): QualityDimensions {
+   193→   193→  const rng = seededRandom(meta.code.split('').reduce((a, c) => a + c.charCodeAt(0), 0) + 400);
+   194→   194→  const freshness = Number((18 + rng() * 7).toFixed(0));
+   195→   195→  const consistency = Number((22 + rng() * 8).toFixed(0));
+   196→   196→  const completeness = Number((15 + rng() * 5).toFixed(0));
+   197→   197→  const abnormal = Number((10 + rng() * 5).toFixed(0));
+   198→   198→  const sourceHealth = Number((7 + rng() * 3).toFixed(0));
+   199→   199→  return { freshness, consistency, completeness, abnormal, sourceHealth, totalScore: freshness + consistency + completeness + abnormal + sourceHealth };
+   200→   200→}
+   201→   201→
+   202→   202→// ─── Helper Functions ────────────────────────────────────────────────────────────
+   203→   203→
+   204→   204→function formatMoney(yuan: number): string {
+   205→   205→  return '¥' + Math.abs(yuan).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+   206→   206→}
+   207→   207→
+   208→   208→function percentileColor(pct: number): string {
+   209→   209→  if (pct < 30) return 'bg-emerald-500';
+   210→   210→  if (pct < 70) return 'bg-amber-500';
+   211→   211→  return 'bg-red-500';
+   212→   212→}
+   213→   213→
+   214→   214→function percentileTextColor(pct: number): string {
+   215→   215→  if (pct < 30) return 'text-emerald-600 dark:text-emerald-400';
+   216→   216→  if (pct < 70) return 'text-amber-600 dark:text-amber-400';
+   217→   217→  return 'text-red-600 dark:text-red-400';
+   218→   218→}
+   219→   219→
+   220→   220→function percentileLabel(pct: number): string {
+   221→   221→  if (pct < 30) return '低估';
+   222→   222→  if (pct < 70) return '中估';
+   223→   223→  return '高估';
+   224→   224→}
+   225→   225→
+   226→   226→function qualityStatusBadge(status: string) {
+   227→   227→  switch (status) {
+   228→   228→    case 'valid': return <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">有效</Badge>;
+   229→   229→    case 'degraded': return <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">降级</Badge>;
+   230→   230→    case 'stale': return <Badge className="bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">陈旧</Badge>;
+   231→   231→    case 'conflict': return <Badge className="bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">冲突</Badge>;
+   232→   232→    case 'missing': return <Badge className="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">缺失</Badge>;
+   233→   233→    default: return <Badge variant="secondary">{status}</Badge>;
+   234→   234→  }
+   235→   235→}
+   236→   236→
+   237→   237→function premiumStatusBadge(status: string) {
+   238→   238→  switch (status) {
+   239→   239→    case 'normal': return <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">正常</Badge>;
+   240→   240→    case 'elevated': return <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">偏高</Badge>;
+   241→   241→    case 'high': return <Badge className="bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">高溢价</Badge>;
+   242→   242→    default: return <Badge variant="secondary">{status}</Badge>;
+   243→   243→  }
+   244→   244→}
+   245→   245→
+   246→   246→// ─── Sub-Components ─────────────────────────────────────────────────────────────
+   247→   247→
+   248→   248→function SectionSkeleton() {
+   249→   249→  return <Skeleton className="h-64 w-full rounded-xl" />;
+   250→   250→}
+   251→   251→
+   252→   252→/** ETF selector: horizontal scrollable pill buttons */
+   253→   253→function EtfSelector({
+   254→   254→  etfs,
+   255→   255→  selected,
+   256→   256→  onSelect,
+   257→   257→}: {
+   258→   258→  etfs: EtfMeta[];
+   259→   259→  selected: string;
+   260→   260→  onSelect: (code: string) => void;
+   261→   261→}) {
+   262→   262→  return (
+   263→   263→    <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
+   264→   264→      {etfs.map((etf) => {
+   265→   265→        const isActive = etf.code === selected;
+   266→   266→        return (
+   267→   267→          <TooltipProvider key={etf.code}>
+   268→   268→            <ShadcnTooltip>
+   269→   269→              <TooltipTrigger asChild>
+   270→   270→                <button
+   271→   271→                  type="button"
+   272→   272→                  onClick={() => onSelect(etf.code)}
+   273→   273→                  className={[
+   274→   274→                    'group relative flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-all duration-200 border shrink-0',
+   275→   275→                    isActive
+   276→   276→                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-md shadow-emerald-600/20'
+   277→   277→                      : 'bg-card border-border hover:border-emerald-300 hover:bg-emerald-50/50 dark:hover:bg-emerald-950/20',
+   278→   278→                  ].join(' ')}
+   279→   279→                >
+   280→   280→                  <span className="font-mono text-xs opacity-80">{etf.code}</span>
+   281→   281→                  <span>{etf.name.replace('ETF', '')}</span>
+   282→   282→                  {!isActive && (
+   283→   283→                    <span className={`ml-1 text-[10px] px-1.5 py-0.5 rounded-full ${CATEGORY_COLORS[etf.category]}`}>
+   284→   284→                      {etf.category}
+   285→   285→                    </span>
+   286→   286→                  )}
+   287→   287→                  {isActive && (
+   288→   288→                    <span className="ml-1 size-1.5 rounded-full bg-white/80 animate-pulse" />
+   289→   289→                  )}
+   290→   290→                </button>
+   291→   291→              </TooltipTrigger>
+   292→   292→              <TooltipContent>
+   293→   293→                <p className="text-xs">{etf.name} ({etf.code})</p>
+   294→   294→                <p className="text-[10px] text-muted-foreground">{etf.category}</p>
+   295→   295→              </TooltipContent>
+   296→   296→            </ShadcnTooltip>
+   297→   297→          </TooltipProvider>
+   298→   298→        );
+   299→   299→      })}
+   300→   300→    </div>
+   301→   301→  );
+   302→   302→}
+   303→   303→
+   304→   304→/** 30-day price trend chart */
+   305→   305→function PriceTrendChart({ data }: { data: PricePoint[] }) {
+   306→   306→  const isUp = data.length > 1 && data[data.length - 1].nav >= data[0].nav;
+   307→   307→
+   308→   308→  return (
+   309→   309→    <Card>
+   310→   310→      <CardHeader className="pb-3">
+   311→   311→        <div className="flex items-center justify-between">
+   312→   312→          <div>
+   313→   313→            <CardTitle className="text-base flex items-center gap-2">
+   314→   314→              <BarChart3 className="size-4 text-emerald-600" />
+   315→   315→              30日价格走势
+   316→   316→            </CardTitle>
+   317→   317→            <CardDescription className="mt-1">模拟净值曲线（随机游走）</CardDescription>
+   318→   318→          </div>
+   319→   319→          <Badge variant="outline" className={isUp ? 'text-emerald-600 border-emerald-300' : 'text-red-600 border-red-300'}>
+   320→   320→            {isUp ? <TrendingUp className="size-3 mr-1" /> : <TrendingDown className="size-3 mr-1" />}
+   321→   321→            {isUp ? '上涨趋势' : '下跌趋势'}
+   322→   322→          </Badge>
+   323→   323→        </div>
+   324→   324→      </CardHeader>
+   325→   325→      <CardContent>
+   326→   326→        <div className="h-[240px]">
+   327→   327→          <ResponsiveContainer width="100%" height="100%">
+   328→   328→            <AreaChart data={data} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
+   329→   329→              <defs>
+   330→   330→                <linearGradient id="navGradient" x1="0" y1="0" x2="0" y2="1">
+   331→   331→                  <stop offset="0%" stopColor={isUp ? '#10b981' : '#ef4444'} stopOpacity={0.3} />
+   332→   332→                  <stop offset="100%" stopColor={isUp ? '#10b981' : '#ef4444'} stopOpacity={0.02} />
+   333→   333→                </linearGradient>
+   334→   334→              </defs>
+   335→   335→              <CartesianGrid strokeDasharray="3 3" className="stroke-border/30" />
+   336→   336→              <XAxis
+   337→   337→                dataKey="date"
+   338→   338→                tick={{ fontSize: 10 }}
+   339→   339→                tickLine={false}
+   340→   340→                axisLine={false}
+   341→   341→                interval="preserveStartEnd"
+   342→   342→              />
+   343→   343→              <YAxis
+   344→   344→                tick={{ fontSize: 10 }}
+   345→   345→                tickLine={false}
+   346→   346→                axisLine={false}
+   347→   347→                domain={['auto', 'auto']}
+   348→   348→                tickFormatter={(v: number) => v.toFixed(2)}
+   349→   349→              />
+   350→   350→              <RechartsTooltip
+   351→   351→                contentStyle={{
+   352→   352→                  borderRadius: '8px',
+   353→   353→                  border: '1px solid var(--border)',
+   354→   354→                  backgroundColor: 'var(--card)',
+   355→   355→                  fontSize: '12px',
+   356→   356→                }}
+   357→   357→                formatter={(value: number) => [value.toFixed(4), 'NAV']}
+   358→   358→                labelFormatter={(label: string) => `日期: ${label}`}
+   359→   359→              />
+   360→   360→              <Area
+   361→   361→                type="monotone"
+   362→   362→                dataKey="nav"
+   363→   363→                stroke={isUp ? '#10b981' : '#ef4444'}
+   364→   364→                strokeWidth={2}
+   365→   365→                fill="url(#navGradient)"
+   366→   366→                dot={false}
+   367→   367→                activeDot={{ r: 4, strokeWidth: 0 }}
+   368→   368→              />
+   369→   369→            </AreaChart>
+   370→   370→          </ResponsiveContainer>
+   371→   371→        </div>
+   372→   372→        <p className="mt-2 text-[10px] text-muted-foreground/60 text-right">
+   373→   373→          数据来源: 模拟数据（仅供展示）
+   374→   374→        </p>
+   375→   375→      </CardContent>
+   376→   376→    </Card>
+   377→   377→  );
+   378→   378→}
+   379→   379→
+   380→   380→/** Valuation percentile gauge */
+   381→   381→function ValuationGauge({ data }: { data: ValuationData }) {
+   382→   382→  const gaugeData = [
+   383→   383→    { name: '1年', value: data.pePercentile1y },
+   384→   384→    { name: '3年', value: data.pePercentile3y },
+   385→   385→    { name: '5年', value: data.pePercentile5y },
+   386→   386→    { name: '全周期', value: data.pePercentile },
+   387→   387→  ];
+   388→   388→
+   389→   389→  return (
+   390→   390→    <Card>
+   391→   391→      <CardHeader className="pb-3">
+   392→   392→        <CardTitle className="text-base flex items-center gap-2">
+   393→   393→          <Gauge className="size-4 text-teal-600" />
+   394→   394→          估值百分位
+   395→   395→        </CardTitle>
+   396→   396→        <CardDescription>PE/PB 在历史区间中的分位位置</CardDescription>
+   397→   397→      </CardHeader>
+   398→   398→      <CardContent className="space-y-5">
+   399→   399→        {/* PE & PB Summary */}
+   400→   400→        <div className="grid grid-cols-2 gap-4">
+   401→   401→          <div className="rounded-lg border p-3 space-y-2">
+   402→   402→            <div className="flex items-center justify-between">
+   403→   403→              <span className="text-xs text-muted-foreground font-medium">PE</span>
+   404→   404→              <span className={`text-xs font-semibold ${percentileTextColor(data.pePercentile)}`}>
+   405→   405→                {percentileLabel(data.pePercentile)}
+   406→   406→              </span>
+   407→   407→            </div>
+   408→   408→            <p className="text-2xl font-bold font-mono">{data.peValue.toFixed(2)}</p>
+   409→   409→            <div className="space-y-1">
+   410→   410→              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+   411→   411→                <span>百分位</span>
+   412→   412→                <span className="font-mono">{data.pePercentile.toFixed(1)}%</span>
+   413→   413→              </div>
+   414→   414→              <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+   415→   415→                <div
+   416→   416→                  className={`h-full rounded-full transition-all duration-700 ${percentileColor(data.pePercentile)}`}
+   417→   417→                  style={{ width: `${Math.min(100, data.pePercentile)}%` }}
+   418→   418→                />
+   419→   419→              </div>
+   420→   420→            </div>
+   421→   421→          </div>
+   422→   422→          <div className="rounded-lg border p-3 space-y-2">
+   423→   423→            <div className="flex items-center justify-between">
+   424→   424→              <span className="text-xs text-muted-foreground font-medium">PB</span>
+   425→   425→              <span className={`text-xs font-semibold ${percentileTextColor(data.pbPercentile)}`}>
+   426→   426→                {percentileLabel(data.pbPercentile)}
+   427→   427→              </span>
+   428→   428→            </div>
+   429→   429→            <p className="text-2xl font-bold font-mono">{data.pbValue.toFixed(2)}</p>
+   430→   430→            <div className="space-y-1">
+   431→   431→              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+   432→   432→                <span>百分位</span>
+   433→   433→                <span className="font-mono">{data.pbPercentile.toFixed(1)}%</span>
+   434→   434→              </div>
+   435→   435→              <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+   436→   436→                <div
+   437→   437→                  className={`h-full rounded-full transition-all duration-700 ${percentileColor(data.pbPercentile)}`}
+   438→   438→                  style={{ width: `${Math.min(100, data.pbPercentile)}%` }}
+   439→   439→                />
+   440→   440→              </div>
+   441→   441→            </div>
+   442→   442→          </div>
+   443→   443→        </div>
+   444→   444→
+   445→   445→        {/* Multi-window PE Percentile Bar Chart */}
+   446→   446→        <div>
+   447→   447→          <p className="text-xs font-medium text-muted-foreground mb-2">PE 百分位 — 多时间窗口</p>
+   448→   448→          <div className="h-[140px]">
+   449→   449→            <ResponsiveContainer width="100%" height="100%">
+   450→   450→              <BarChart data={gaugeData} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
+   451→   451→                <CartesianGrid strokeDasharray="3 3" className="stroke-border/30" />
+   452→   452→                <XAxis dataKey="name" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+   453→   453→                <YAxis
+   454→   454→                  tick={{ fontSize: 10 }}
+   455→   455→                  tickLine={false}
+   456→   456→                  axisLine={false}
+   457→   457→                  domain={[0, 100]}
+   458→   458→                  tickFormatter={(v: number) => `${v}%`}
+   459→   459→                />
+   460→   460→                <RechartsTooltip
+   461→   461→                  contentStyle={{
+   462→   462→                    borderRadius: '8px',
+   463→   463→                    border: '1px solid var(--border)',
+   464→   464→                    backgroundColor: 'var(--card)',
+   465→   465→                    fontSize: '12px',
+   466→   466→                  }}
+   467→   467→                  formatter={(value: number) => [`${value.toFixed(1)}%`, 'PE 百分位']}
+   468→   468→                />
+   469→   469→                <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={48}>
+   470→   470→                  {gaugeData.map((entry, index) => (
+   471→   471→                    <Cell
+   472→   472→                      key={`cell-${index}`}
+   473→   473→                      fill={entry.value < 30 ? '#10b981' : entry.value < 70 ? '#f59e0b' : '#ef4444'}
+   474→   474→                      fillOpacity={0.8}
+   475→   475→                    />
+   476→   476→                  ))}
+   477→   477→                </Bar>
+   478→   478→              </BarChart>
+   479→   479→            </ResponsiveContainer>
+   480→   480→          </div>
+   481→   481→        </div>
+   482→   482→
+   483→   483→        {/* Percentile legend */}
+   484→   484→        <div className="flex items-center gap-4 text-[10px] text-muted-foreground">
+   485→   485→          <span className="flex items-center gap-1"><span className="size-2 rounded-sm bg-emerald-500" /> &lt;30% 低估</span>
+   486→   486→          <span className="flex items-center gap-1"><span className="size-2 rounded-sm bg-amber-500" /> 30-70% 中估</span>
+   487→   487→          <span className="flex items-center gap-1"><span className="size-2 rounded-sm bg-red-500" /> &gt;70% 高估</span>
+   488→   488→        </div>
+   489→   489→
+   490→   490→        <p className="text-[10px] text-muted-foreground/60 text-right">
+   491→   491→          数据来源: 模拟估值数据（仅供展示）
+   492→   492→        </p>
+   493→   493→      </CardContent>
+   494→   494→    </Card>
+   495→   495→  );
+   496→   496→}
+   497→   497→
+   498→   498→/** Premium section for QDII ETFs */
+   499→   499→function PremiumSection({ data }: { data: PremiumData | null }) {
+   500→   500→  if (!data) return null;
+   501→   501→
+   502→   502→  return (
+   503→   503→    <Card>
+   504→   504→      <CardHeader className="pb-3">
+   505→   505→        <div className="flex items-center justify-between">
+   506→   506→          <div>
+   507→   507→            <CardTitle className="text-base flex items-center gap-2">
+   508→   508→              <Activity className="size-4 text-violet-600" />
+   509→   509→              QDII 溢价率
+   510→   510→            </CardTitle>
+   511→   511→            <CardDescription className="mt-1">场内交易价格与IOPV的偏差</CardDescription>
+   512→   512→          </div>
+   513→   513→          {premiumStatusBadge(data.status)}
+   514→   514→        </div>
+   515→   515→      </CardHeader>
+   516→   516→      <CardContent>
+   517→   517→        <div className="grid grid-cols-3 gap-4 mb-4">
+   518→   518→          <div className="text-center">
+   519→   519→            <p className="text-xs text-muted-foreground mb-1">溢价率</p>
+   520→   520→            <p className={`text-xl font-bold font-mono ${data.premium > 3 ? 'text-red-600' : data.premium > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+   521→   521→              {data.premium > 0 ? '+' : ''}{data.premium}%
+   522→   522→            </p>
+   523→   523→          </div>
+   524→   524→          <div className="text-center">
+   525→   525→            <p className="text-xs text-muted-foreground mb-1">场内净值</p>
+   526→   526→            <p className="text-lg font-mono font-semibold">{data.nav.toFixed(4)}</p>
+   527→   527→          </div>
+   528→   528→          <div className="text-center">
+   529→   529→            <p className="text-xs text-muted-foreground mb-1">IOPV</p>
+   530→   530→            <p className="text-lg font-mono font-semibold">{data.iopv.toFixed(4)}</p>
+   531→   531→          </div>
+   532→   532→        </div>
+   533→   533→        {/* Premium bar */}
+   534→   534→        <div className="rounded-lg border p-3 bg-muted/30">
+   535→   535→          <div className="flex items-center justify-between text-xs mb-2">
+   536→   536→            <span className="text-muted-foreground">溢价率范围</span>
+   537→   537→            <span className="font-mono">-2% ~ +8%</span>
+   538→   538→          </div>
+   539→   539→          <div className="relative h-3 w-full rounded-full bg-muted overflow-hidden">
+   540→   540→            {/* Markers for thresholds */}
+   541→   541→            <div className="absolute left-[20%] top-0 bottom-0 w-px bg-amber-400/60" />
+   542→   542→            <div className="absolute left-[50%] top-0 bottom-0 w-px bg-red-400/60" />
+   543→   543→            {/* Current position */}
+   544→   544→            <div
+   545→   545→              className="absolute top-0 bottom-0 w-1.5 rounded-full bg-violet-500 shadow-sm transition-all duration-500"
+   546→   546→              style={{ left: `${Math.max(0, Math.min(100, (data.premium + 2) / 10 * 100))}%` }}
+   547→   547→            />
+   548→   548→          </div>
+   549→   549→          <div className="flex justify-between text-[9px] text-muted-foreground/60 mt-1">
+   550→   550→            <span>-2%</span>
+   551→   551→            <span>0%</span>
+   552→   552→            <span>+3%</span>
+   553→   553→            <span>+8%</span>
+   554→   554→          </div>
+   555→   555→        </div>
+   556→   556→        <p className="mt-3 text-[10px] text-muted-foreground/60 text-right">
+   557→   557→          数据来源: 模拟溢价数据（仅供展示）
+   558→   558→        </p>
+   559→   559→      </CardContent>
+   560→   560→    </Card>
+   561→   561→  );
+   562→   562→}
+   563→   563→
+   564→   564→/** Dividend section for dividend ETFs */
+   565→   565→function DividendSection({ data }: { data: DividendData | null }) {
+   566→   566→  if (!data) return null;
+   567→   567→
+   568→   568→  return (
+   569→   569→    <Card>
+   570→   570→      <CardHeader className="pb-3">
+   571→   571→        <CardTitle className="text-base flex items-center gap-2">
+   572→   572→          <TrendingUp className="size-4 text-amber-600" />
+   573→   573→          股息指标
+   574→   574→        </CardTitle>
+   575→   575→        <CardDescription>分红率与股息率</CardDescription>
+   576→   576→      </CardHeader>
+   577→   577→      <CardContent>
+   578→   578→        <div className="grid grid-cols-3 gap-4">
+   579→   579→          <div className="text-center">
+   580→   580→            <p className="text-xs text-muted-foreground mb-1">股息率</p>
+   581→   581→            <p className="text-xl font-bold font-mono text-amber-600">{data.yieldPct}%</p>
+   582→   582→          </div>
+   583→   583→          <div className="text-center">
+   584→   584→            <p className="text-xs text-muted-foreground mb-1">分红比例</p>
+   585→   585→            <p className="text-lg font-mono font-semibold">{data.payoutRatio}%</p>
+   586→   586→          </div>
+   587→   587→          <div className="text-center">
+   588→   588→            <p className="text-xs text-muted-foreground mb-1">每万份分红</p>
+   589→   589→            <p className="text-lg font-mono font-semibold">{data.dividendPer10k.toFixed(2)}</p>
+   590→   590→          </div>
+   591→   591→        </div>
+   592→   592→        <div className="mt-3 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+   593→   593→          <Clock className="size-3" />
+   594→   594→          <span>除权日: {data.exDate}</span>
+   595→   595→        </div>
+   596→   596→        <p className="mt-2 text-[10px] text-muted-foreground/60 text-right">
+   597→   597→          数据来源: 模拟分红数据（仅供展示）
+   598→   598→        </p>
+   599→   599→      </CardContent>
+   600→   600→    </Card>
+   601→   601→  );
+   602→   602→}
+   603→   603→
+   604→   604→/** Quality score dimension bars */
+   605→   605→function QualityScoreDisplay({ quality }: { quality: QualityDimensions }) {
+   606→   606→  const scoreColor = quality.totalScore >= 65 ? 'text-emerald-600' : quality.totalScore >= 45 ? 'text-amber-600' : 'text-red-600';
+   607→   607→  const scoreBg = quality.totalScore >= 65 ? 'bg-emerald-100 dark:bg-emerald-900/30' : quality.totalScore >= 45 ? 'bg-amber-100 dark:bg-amber-900/30' : 'bg-red-100 dark:bg-red-900/30';
+   608→   608→
+   609→   609→  return (
+   610→   610→    <Card>
+   611→   611→      <CardHeader className="pb-3">
+   612→   612→        <div className="flex items-center justify-between">
+   613→   613→          <div>
+   614→   614→            <CardTitle className="text-base flex items-center gap-2">
+   615→   615→              <Shield className="size-4 text-emerald-600" />
+   616→   616→              数据质量评分
+   617→   617→            </CardTitle>
+   618→   618→            <CardDescription className="mt-1">五维质量评分（满分 100）</CardDescription>
+   619→   619→          </div>
+   620→   620→          <div className={`rounded-lg px-3 py-1.5 ${scoreBg}`}>
+   621→   621→            <span className={`text-lg font-bold font-mono ${scoreColor}`}>{quality.totalScore}</span>
+   622→   622→            <span className="text-[10px] text-muted-foreground ml-1">/100</span>
+   623→   623→          </div>
+   624→   624→        </div>
+   625→   625→      </CardHeader>
+   626→   626→      <CardContent className="space-y-3">
+   627→   627→        {QUALITY_DIMENSIONS.map((dim) => {
+   628→   628→          const value = quality[dim.key as keyof QualityDimensions] as number;
+   629→   629→          const pct = (value / dim.max) * 100;
+   630→   630→          const barColor = pct >= 80 ? 'bg-emerald-500' : pct >= 60 ? 'bg-amber-500' : 'bg-red-500';
+   631→   631→          return (
+   632→   632→            <div key={dim.key} className="space-y-1">
+   633→   633→              <div className="flex items-center justify-between">
+   634→   634→                <div className="flex items-center gap-1.5 text-xs">
+   635→   635→                  <dim.icon className="size-3 text-muted-foreground" />
+   636→   636→                  <span className="font-medium">{dim.label}</span>
+   637→   637→                </div>
+   638→   638→                <div className="flex items-center gap-2">
+   639→   639→                  <span className="text-[10px] text-muted-foreground">满分 {dim.max}</span>
+   640→   640→                  <span className="text-xs font-mono font-semibold">{value}</span>
+   641→   641→                </div>
+   642→   642→              </div>
+   643→   643→              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+   644→   644→                <div
+   645→   645→                  className={`h-full rounded-full transition-all duration-700 ${barColor}`}
+   646→   646→                  style={{ width: `${Math.min(100, pct)}%` }}
+   647→   647→                />
+   648→   648→              </div>
+   649→   649→            </div>
+   650→   650→          );
+   651→   651→        })}
+   652→   652→
+   653→   653→        <Separator className="my-3" />
+   654→   654→
+   655→   655→        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+   656→   656→          <Info className="size-3" />
+   657→   657→          <span>综合质量分 ≥ 65 可用于弱规则，≥ 80 可用于强规则</span>
+   658→   658→        </div>
+   659→   659→        <p className="text-[10px] text-muted-foreground/60 text-right">
+   660→   660→          数据来源: 模拟质量评分（仅供展示）
+   661→   661→        </p>
+   662→   662→      </CardContent>
+   663→   663→    </Card>
+   664→   664→  );
+   665→   665→}
+   666→   666→
+   667→   667→/** Data Quality from API (per-ETF real data) */
+   668→   668→function DataQualityApiSection({ etfCode }: { etfCode: string }) {
+   669→   669→  const { data: qualityRes, isLoading } = useQuery({
+   670→   670→    queryKey: ['data-quality', etfCode],
+   671→   671→    queryFn: () => fetch(`/api/data-quality?etfCode=${etfCode}`).then(r => r.json()) as Promise<ApiResponse<DataQualityLogDisplay[]>>,
+   672→   672→  });
+   673→   673→
+   674→   674→  const logs = qualityRes?.data ?? [];
+   675→   675→
+   676→   676→  if (isLoading) return <SectionSkeleton />;
+   677→   677→  if (logs.length === 0) {
+   678→   678→    return (
+   679→   679→      <Card>
+   680→   680→        <CardHeader className="pb-3">
+   681→   681→          <CardTitle className="text-base flex items-center gap-2">
+   682→   682→            <Database className="size-4 text-slate-500" />
+   683→   683→            实时数据质量日志
+   684→   684→          </CardTitle>
+   685→   685→          <CardDescription>来自 /api/data-quality 的质量门禁记录</CardDescription>
+   686→   686→        </CardHeader>
+   687→   687→        <CardContent>
+   688→   688→          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+   689→   689→            <Database className="size-8 mb-2 opacity-30" />
+   690→   690→            <p className="text-sm">暂无质量日志数据</p>
+   691→   691→            <p className="text-xs mt-1 text-muted-foreground/60">ETF {etfCode} 尚无数据质量记录</p>
+   692→   692→          </div>
+   693→   693→        </CardContent>
+   694→   694→      </Card>
+   695→   695→    );
+   696→   696→  }
+   697→   697→
+   698→   698→  return (
+   699→   699→    <Card>
+   700→   700→      <CardHeader className="pb-3">
+   701→   701→        <div className="flex items-center justify-between">
+   702→   702→          <div>
+   703→   703→            <CardTitle className="text-base flex items-center gap-2">
+   704→   704→              <Database className="size-4 text-emerald-600" />
+   705→   705→              实时数据质量日志
+   706→   706→            </CardTitle>
+   707→   707→            <CardDescription className="mt-1">来自数据质量门禁系统</CardDescription>
+   708→   708→          </div>
+   709→   709→          <Badge variant="outline" className="text-xs">{logs.length} 条记录</Badge>
+   710→   710→        </div>
+   711→   711→      </CardHeader>
+   712→   712→      <CardContent>
+   713→   713→        <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+   714→   714→          {logs.slice(0, 10).map((log) => (
+   715→   715→            <div key={log.id} className="rounded-lg border p-3 space-y-1.5">
+   716→   716→              <div className="flex items-center justify-between">
+   717→   717→                <div className="flex items-center gap-2">
+   718→   718→                  <span className="font-mono text-xs font-medium">{log.metricName}</span>
+   719→   719→                  {qualityStatusBadge(log.qualityStatus)}
+   720→   720→                </div>
+   721→   721→                <span className="text-[10px] text-muted-foreground font-mono">
+   722→   722→                  {new Date(log.createdAt).toLocaleDateString('zh-CN')}
+   723→   723→                </span>
+   724→   724→              </div>
+   725→   725→              <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+   726→   726→                <span>综合分: <span className="font-mono font-medium">{log.score}</span></span>
+   727→   727→                {log.canUseForRule ? (
+   728→   728→                  <span className="text-emerald-600">可用规则 ✓</span>
+   729→   729→                ) : (
+   730→   730→                  <span className="text-red-500">不可用 ✗</span>
+   731→   731→                )}
+   732→   732→                {log.reason && <span className="truncate max-w-[200px]">{log.reason}</span>}
+   733→   733→              </div>
+   734→   734→            </div>
+   735→   735→          ))}
+   736→   736→        </div>
+   737→   737→      </CardContent>
+   738→   738→    </Card>
+   739→   739→  );
+   740→   740→}
+   741→   741→
+   742→   742→/** Technical State placeholder */
+   743→   743→function TechnicalStatePlaceholder() {
+   744→   744→  return (
+   745→   745→    <Card>
+   746→   746→      <CardHeader className="pb-3">
+   747→   747→        <CardTitle className="text-base flex items-center gap-2">
+   748→   748→          <Activity className="size-4 text-muted-foreground" />
+   749→   749→          技术指标
+   750→   750→        </CardTitle>
+   751→   751→        <CardDescription>MACD / RSI / 均线系统</CardDescription>
+   752→   752→      </CardHeader>
+   753→   753→      <CardContent>
+   754→   754→        <div className="flex flex-col items-center justify-center py-10 text-center space-y-3">
+   755→   755→          <div className="size-14 rounded-xl bg-muted/50 flex items-center justify-center">
+   756→   756→            <Activity className="size-6 text-muted-foreground/40" />
+   757→   757→          </div>
+   758→   758→          <div>
+   759→   759→            <p className="text-sm font-medium text-muted-foreground">技术指标模块开发中</p>
+   760→   760→            <p className="text-xs text-muted-foreground/60 mt-1">Sprint 3 — MACD / RSI / 均线 / KDJ</p>
+   761→   761→          </div>
+   762→   762→          <Badge variant="outline" className="text-[10px] gap-1">
+   763→   763→            <ChevronRight className="size-3" />
+   764→   764→            E6 进度 0%
+   765→   765→          </Badge>
+   766→   766→        </div>
+   767→   767→      </CardContent>
+   768→   768→    </Card>
+   769→   769→  );
+   770→   770→}
+   771→   771→
+   772→   772→/** Data Lineage card */
+   773→   773→function DataLineage({ meta }: { meta: EtfMeta }) {
+   774→   774→  return (
+   775→   775→    <Card>
+   776→   776→      <CardHeader className="pb-3">
+   777→   777→        <CardTitle className="text-base flex items-center gap-2">
+   778→   778→          <Database className="size-4 text-slate-500" />
+   779→   779→          数据溯源
+   780→   780→        </CardTitle>
+   781→   781→        <CardDescription>数据源与更新频率</CardDescription>
+   782→   782→      </CardHeader>
+   783→   783→      <CardContent className="space-y-3">
+   784→   784→        <div className="grid gap-2">
+   785→   785→          {[
+   786→   786→            { name: '东方财富', type: '网页采集', status: 'primary', quality: 92 },
+   787→   787→            { name: '天天基金', type: 'API', status: 'backup', quality: 88 },
+   788→   788→            { name: '新浪财经', type: '网页采集', status: 'degraded', quality: 65 },
+   789→   789→          ].map((source) => (
+   790→   790→            <div key={source.name} className="flex items-center justify-between rounded-lg border p-2.5">
+   791→   791→              <div className="flex items-center gap-2">
+   792→   792→                <span className={`size-2 rounded-full ${source.status === 'primary' ? 'bg-emerald-500' : source.status === 'backup' ? 'bg-slate-400' : 'bg-amber-500'}`} />
+   793→   793→                <div>
+   794→   794→                  <span className="text-xs font-medium">{source.name}</span>
+   795→   795→                  <span className="text-[10px] text-muted-foreground ml-1.5">{source.type}</span>
+   796→   796→                </div>
+   797→   797→              </div>
+   798→   798→              <div className="flex items-center gap-2">
+   799→   799→                {source.status === 'primary' && <Badge variant="outline" className="text-[10px] text-emerald-600 border-emerald-300">主源</Badge>}
+   800→   800→                <span className="text-[10px] font-mono text-muted-foreground">质量 {source.quality}</span>
+   801→   801→              </div>
+   802→   802→            </div>
+   803→   803→          ))}
+   804→   804→        </div>
+   805→   805→        <Separator />
+   806→   806→        <div className="text-[10px] text-muted-foreground space-y-0.5">
+   807→   807→          <p>ETF: {meta.name} ({meta.code}) · {meta.category}</p>
+   808→   808→          <p>采集频率: 每交易日 15:30 后自动采集</p>
+   809→   809→          <p>上次采集: {new Date().toLocaleString('zh-CN')}</p>
+   810→   810→        </div>
+   811→   811→      </CardContent>
+   812→   812→    </Card>
+   813→   813→  );
+   814→   814→}
+   815→   815→
+   816→   816→// ─── Main Trends Tab ────────────────────────────────────────────────────────────
+   817→   817→
+   818→   818→export function TrendsTab() {
+   819→   819→  // Fetch ETF configs for real data
+   820→   820→  const { data: configsRes } = useQuery({
+   821→   821→    queryKey: ['etf-configs'],
+   822→   822→    queryFn: () => fetch('/api/etf-configs').then(r => r.json()) as Promise<ApiResponse<EtfConfigWithSnapshot[]>>,
+   823→   823→  });
+   824→   824→
+   825→   825→  const etfConfigs = configsRes?.data ?? [];
+   826→   826→
+   827→   827→  // Use API data for ETF list, fallback to metadata keys
+   828→   828→  const etfList = useMemo(() => {
+   829→   829→    if (etfConfigs.length > 0) {
+   830→   830→      return etfConfigs.map(c => ({
+   831→   831→        code: c.code,
+   832→   832→        name: c.name,
+   833→   833→        category: c.category,
+   834→   834→      }));
+   835→   835→    }
+   836→   836→    // Fallback: use metadata keys
+   837→   837→    return Object.values(ETF_METADATA).map(m => ({ code: m.code, name: m.name, category: m.category }));
+   838→   838→  }, [etfConfigs]);
+   839→   839→
+   840→   840→  const [selectedEtf, setSelectedEtf] = useState<string>('510300');
+   841→   841→
+   842→   842→  // Generate mock data for selected ETF
+   843→   843→  const meta = useMemo(() => ETF_METADATA[selectedEtf] ?? Object.values(ETF_METADATA)[0], [selectedEtf]);
+   844→   844→  const priceData = useMemo(() => generateMockPriceHistory(meta), [meta]);
+   845→   845→  const valuationData = useMemo(() => generateMockValuation(meta), [meta]);
+   846→   846→  const premiumData = useMemo(() => generateMockPremium(meta), [meta]);
+   847→   847→  const dividendData = useMemo(() => generateMockDividend(meta), [meta]);
+   848→   848→  const qualityData = useMemo(() => generateMockQuality(meta), [meta]);
+   849→   849→
+   850→   850→  // Find current config for the selected ETF
+   851→   851→  const currentConfig = useMemo(() => etfConfigs.find(c => c.code === selectedEtf), [etfConfigs, selectedEtf]);
+   852→   852→
+   853→   853→  return (
+   854→   854→    <div className="space-y-5">
+   855→   855→      {/* ETF Selector */}
+   856→   856→      <FadeInUp>
+   857→   857→        <div className="space-y-2">
+   858→   858→          <div className="flex items-center gap-2">
+   859→   859→            <TrendingUp className="size-4 text-emerald-600" />
+   860→   860→            <h3 className="text-sm font-semibold">选择 ETF</h3>
+   861→   861→          </div>
+   862→   862→          <EtfSelector etfs={etfList} selected={selectedEtf} onSelect={setSelectedEtf} />
+   863→   863→        </div>
+   864→   864→      </FadeInUp>
+   865→   865→
+   866→   866→      {/* Current ETF info banner */}
+   867→   867→      {currentConfig && (
+   868→   868→        <FadeInUp delay={0.05}>
+   869→   869→          <div className="rounded-lg border bg-card p-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+   870→   870→            <div>
+   871→   871→              <span className="text-muted-foreground">代码</span>
+   872→   872→              <span className="ml-1.5 font-mono font-semibold">{currentConfig.code}</span>
+   873→   873→            </div>
+   874→   874→            <div>
+   875→   875→              <span className="text-muted-foreground">名称</span>
+   876→   876→              <span className="ml-1.5 font-medium">{currentConfig.name}</span>
+   877→   877→            </div>
+   878→   878→            <div>
+   879→   879→              <span className="text-muted-foreground">目标比例</span>
+   880→   880→              <span className="ml-1.5 font-mono font-semibold text-emerald-600">{(currentConfig.targetRatioPercent ?? 0).toFixed(2)}%</span>
+   881→   881→            </div>
+   882→   882→            <div>
+   883→   883→              <span className="text-muted-foreground">最新市值</span>
+   884→   884→              <span className="ml-1.5 font-mono">
+   885→   885→                {currentConfig.latestSnapshot ? formatMoney(currentConfig.latestSnapshot.marketValueYuan) : '—'}
+   886→   886→              </span>
+   887→   887→            </div>
+   888→   888→            {currentConfig.latestSnapshot && (
+   889→   889→              <div>
+   890→   890→                <span className="text-muted-foreground">快照日</span>
+   891→   891→                <span className="ml-1.5 font-mono">
+   892→   892→                  {new Date(currentConfig.latestSnapshot.snapshotDate).toLocaleDateString('zh-CN')}
+   893→   893→                </span>
+   894→   894→              </div>
+   895→   895→            )}
+   896→   896→          </div>
+   897→   897→        </FadeInUp>
+   898→   898→      )}
+   899→   899→
+   900→   900→      {/* Price Trend Chart — full width */}
+   901→   901→      <FadeInUp delay={0.1}>
+   902→   902→        <PriceTrendChart data={priceData} />
+   903→   903→      </FadeInUp>
+   904→   904→
+   905→   905→      {/* Valuation + Premium / Dividend — 2 col on desktop */}
+   906→   906→      <div className="grid gap-5 lg:grid-cols-2">
+   907→   907→        <FadeInUp delay={0.15}>
+   908→   908→          <ValuationGauge data={valuationData} />
+   909→   909→        </FadeInUp>
+   910→   910→        <FadeInUp delay={0.2}>
+   911→   911→          {premiumData ? <PremiumSection data={premiumData} /> : <DividendSection data={dividendData} />}
+   912→   912→        </FadeInUp>
+   913→   913→      </div>
+   914→   914→
+   915→   915→      {/* If both premium and dividend exist, show dividend in another row */}
+   916→   916→      {premiumData && dividendData && (
+   917→   917→        <FadeInUp delay={0.22}>
+   918→   918→          <DividendSection data={dividendData} />
+   919→   919→        </FadeInUp>
+   920→   920→      )}
+   921→   921→
+   922→   922→      {/* Quality Score + Technical State — 2 col on desktop */}
+   923→   923→      <div className="grid gap-5 lg:grid-cols-2">
+   924→   924→        <FadeInUp delay={0.25}>
+   925→   925→          <QualityScoreDisplay quality={qualityData} />
+   926→   926→        </FadeInUp>
+   927→   927→        <FadeInUp delay={0.3}>
+   928→   928→          <TechnicalStatePlaceholder />
+   929→   929→        </FadeInUp>
+   930→   930→      </div>
+   931→   931→
+   932→   932→      {/* Real Data Quality from API */}
+   933→   933→      <FadeInUp delay={0.35}>
+   934→   934→        <DataQualityApiSection etfCode={selectedEtf} />
+   935→   935→      </FadeInUp>
+   936→   936→
+   937→   937→      {/* Data Lineage */}
+   938→   938→      <FadeInUp delay={0.4}>
+   939→   939→        <DataLineage meta={meta} />
+   940→   940→      </FadeInUp>
+   941→   941→    </div>
+   942→   942→  );
+   943→   943→}

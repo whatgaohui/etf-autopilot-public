@@ -175,13 +175,13 @@ export default function Home() {
                   <TabsTrigger value="settings">设置</TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="overview" forceMount>
+                <TabsContent value="overview">
                   <OverviewTab />
                 </TabsContent>
-                <TabsContent value="trends" forceMount>
+                <TabsContent value="trends">
                   <TrendsTab />
                 </TabsContent>
-                <TabsContent value="settings" forceMount>
+                <TabsContent value="settings">
                   <SettingsTab />
                 </TabsContent>
               </Tabs>
