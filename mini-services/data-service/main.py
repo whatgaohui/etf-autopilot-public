@@ -28,6 +28,7 @@ from routers import (
     refresh,
     release,
     strategy,
+    technical,
 )
 from scheduler.jobs import setup_scheduler
 
@@ -384,6 +385,33 @@ def _init_db():
         except Exception as e:
             logger.warning(f"[STARTUP] Default V5.0 strategy version insert failed (non-blocking): {e}")
 
+        # V5.0 Sprint3 E8: execution_order 表 — 建议确认状态机(前半)
+        #   状态: pending → confirmed/rejected → partially_executed/executed/cancelled/expired
+        #   不允许跳过确认直接 executed (PRD §7.8 验收: 未确认建议不能进入成交状态)
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS execution_order (
+                id TEXT PRIMARY KEY,
+                calculation_id TEXT NOT NULL,
+                etf_code TEXT NOT NULL,
+                side TEXT NOT NULL DEFAULT 'buy',
+                planned_amount REAL NOT NULL,
+                planned_shares REAL,
+                execution_mode TEXT DEFAULT 'immediate',
+                status TEXT NOT NULL DEFAULT 'pending',
+                confirmed_at TEXT,
+                rejected_reason TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(calculation_id, etf_code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_execution_order_calc_id
+                ON execution_order(calculation_id);
+            CREATE INDEX IF NOT EXISTS idx_execution_order_status
+                ON execution_order(status, created_at DESC);
+            """
+        )
+
         # V4.2 PRD§11.14: 宏观3张表
         try:
             from services.macro_service import _ensure_macro_tables
@@ -477,6 +505,8 @@ app.include_router(strategy.router)
 # V5.0 Sprint2 E3/E5: 现金账本守恒 + QDII 释放状态机
 app.include_router(cash.router)
 app.include_router(release.router)
+# V5.0 Sprint3 E6: MACD 技术执行分类器
+app.include_router(technical.router)
 
 
 if __name__ == "__main__":

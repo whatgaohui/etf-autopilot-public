@@ -32,6 +32,7 @@ import {
   generateAdvice,
   getQualitySummary,
   getMacroPrompts,
+  createExecutionOrders,
 } from '@/lib/api';
 import type { OcrResult, AdviceResponse, CachedSummaryResponse } from '@/lib/types';
 
@@ -197,6 +198,25 @@ export function Overview() {
       toast.success('定投建议已生成');
       // Refresh market data query to update indicators in the table
       queryClient.invalidateQueries({ queryKey: ['marketData'] });
+
+      // V5.0 Sprint3 E8: 生成建议后自动创建 pending 执行订单 (幂等, 后端会保留已 confirmed/rejected)
+      // 失败不阻断主流程, 用户可在确认弹窗里再次触发
+      try {
+        const buyItems = (result.suggestions || [])
+          .filter((s) => !['511990', '518880'].includes(s.code))
+          .filter((s) => (s.amount ?? 0) > 0)
+          .map((s) => ({
+            etfCode: s.code,
+            side: 'buy',
+            plannedAmount: s.amount,
+            executionMode: s.technicalMode || 'immediate',
+          }));
+        if (result.calculationId && buyItems.length > 0) {
+          await createExecutionOrders(result.calculationId, buyItems);
+        }
+      } catch (e) {
+        console.warn('[Overview] auto-create execution orders failed:', e);
+      }
     } catch (err) {
       setGenerationStep(0);
       toast.error(err instanceof Error ? err.message : '生成建议失败');

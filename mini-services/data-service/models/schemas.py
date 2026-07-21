@@ -145,6 +145,16 @@ class SuggestionItem(BaseModel):
     bucket_type: str = Field("none", alias="bucketType", description="base_bucket | value_bucket | base+value | none")
     # V4.2 策略书§5: 软风控级别 none | reduce | forbid_enhancement | minimal_base | pause_all
     soft_wind_control: str = Field("none", alias="softWindControl", description="软风控级别")
+    # V5.0 Sprint3 E6: 技术执行分类器 (MACD 12/26/9 + 20/40周均线)
+    #   state: strong|conflict|very_weak|improving|weak|neutral|unavailable
+    #   mode:  immediate|staged|wait_pullback|base_only
+    #   coefficient: 仅作用于增强仓, 数据缺失回退中性(1.00), 不阻断基础规则
+    technical_state: Optional[str] = Field("neutral", alias="technicalState",
+        description="MACD技术分类: strong|conflict|very_weak|improving|weak|neutral|unavailable")
+    technical_mode: Optional[str] = Field("immediate", alias="technicalMode",
+        description="执行模式: immediate|staged|wait_pullback|base_only")
+    technical_coefficient: Optional[float] = Field(1.0, alias="technicalCoefficient",
+        description="技术系数(仅作用于增强仓, 0.0~1.5)")
 
     model_config = {"populate_by_name": True}
 

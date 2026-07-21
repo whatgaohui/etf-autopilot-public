@@ -947,3 +947,114 @@ export async function pauseReleasePlan(id: string): Promise<{ success: boolean }
 export async function resumeReleasePlan(id: string): Promise<{ success: boolean }> {
   return request(`/release-plans?action=resume&id=${id}`, { method: 'POST' });
 }
+
+// ─── V5.0 Sprint3 E6: MACD 技术分类 ───
+//
+// GET /api/technical?type=classify&code=xxx → 单只ETF技术分类
+// GET /api/technical?type=all              → 6只ETF批量技术分类
+//
+// 技术状态7态: strong/conflict/very_weak/improving/weak/neutral/unavailable
+// 执行模式4种: immediate(立即) / staged(分批) / wait_pullback(等待回调) / base_only(仅基础仓)
+// 数据缺失时回退中性 (coefficient=1.0, mode=immediate)
+
+export interface TechnicalClassification {
+  state: string;                    // strong | conflict | very_weak | improving | weak | neutral | unavailable
+  coefficient: number;              // 0.0 / 0.5 / 0.8 / 1.0 / 1.2 / 1.5
+  execution_mode: string;           // immediate | staged | wait_pullback | base_only
+  weekly_state: string;             // above_ma20_above_ma40 | above_ma20_below_ma40 | below_ma20_above_ma40 | below_ma20_below_ma40 | insufficient_data
+  daily_state: string;              // macd_golden_cross | macd_death_cross | macd_above_zero | macd_below_zero | insufficient
+  macd_histogram_tail: number[];    // 最近5天MACD直方图
+  macd_line_tail: number[];         // 最近5天MACD线
+  signal_line_tail: number[];       // 最近5天信号线
+  ma20: number | null;              // 周线MA20
+  ma40: number | null;              // 周线MA40
+  etf_code: string;
+  reason?: string;                  // 数据缺失/异常时给出原因
+}
+
+export async function getTechnicalClass(code: string): Promise<TechnicalClassification> {
+  return request<TechnicalClassification>(
+    `/technical?type=classify&code=${encodeURIComponent(code)}`
+  );
+}
+
+export async function getAllTechnicalClass(): Promise<{ items: Record<string, TechnicalClassification> }> {
+  return request<{ items: Record<string, TechnicalClassification> }>(
+    '/technical?type=all'
+  );
+}
+
+// ─── V5.0 Sprint3 E8: 执行订单(状态机) ───
+//
+// POST /api/execution?action=orders-create  → 从计算结果创建 pending 订单
+// POST /api/execution?action=orders-confirm → 逐项 确认/拒绝 (pending→confirmed/rejected)
+// GET  /api/execution?type=orders           → 查询订单列表
+// GET  /api/execution?type=orders-status    → 订单状态摘要
+//
+// 状态机约束: pending → confirmed/rejected 不可逆, 已 confirmed 不能再 reject (反之亦然)
+
+export interface ExecutionOrder {
+  id: string;
+  calculationId: string;
+  etfCode: string;
+  side: string;                       // buy | sell
+  plannedAmount: number;
+  plannedShares: number | null;
+  executionMode: string;              // immediate | staged | wait_pullback | base_only
+  status: string;                     // pending | confirmed | rejected | executed | partially_executed | cancelled | expired
+  confirmedAt: string | null;
+  rejectedReason: string | null;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export async function createExecutionOrders(
+  calculationId: string,
+  items: Array<{
+    etfCode: string;
+    side: string;
+    plannedAmount: number;
+    executionMode: string;
+  }>
+): Promise<{ success: boolean; data?: Record<string, unknown>; error?: string }> {
+  return request('/execution?action=orders-create', {
+    method: 'POST',
+    body: JSON.stringify({ calculationId, items }),
+  });
+}
+
+export async function confirmExecutionOrders(
+  calculationId: string,
+  items: Array<{ etfCode: string; action: 'confirm' | 'reject'; reason?: string }>
+): Promise<{ success: boolean; data?: Record<string, unknown>; error?: string }> {
+  return request('/execution?action=orders-confirm', {
+    method: 'POST',
+    body: JSON.stringify({ calculationId, items }),
+  });
+}
+
+export async function getExecutionOrders(
+  calculationId: string
+): Promise<{ items: ExecutionOrder[]; total: number }> {
+  return request(`/execution?type=orders&calculationId=${encodeURIComponent(calculationId)}`);
+}
+
+export interface ExecutionOrdersStatus {
+  calculationId: string;
+  total: number;
+  pending: number;
+  confirmed: number;
+  rejected: number;
+  executed: number;
+  partiallyExecuted: number;
+  cancelled: number;
+  expired: number;
+  totalPlanned: number;
+  totalConfirmed: number;
+}
+
+export async function getExecutionOrdersStatus(
+  calculationId: string
+): Promise<ExecutionOrdersStatus> {
+  return request(`/execution?type=orders-status&calculationId=${encodeURIComponent(calculationId)}`);
+}

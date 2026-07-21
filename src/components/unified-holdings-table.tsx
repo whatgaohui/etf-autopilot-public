@@ -185,6 +185,52 @@ function getSoftWindControlBadgeClass(t: string | undefined | null): string {
   }
 }
 
+// ─── V5.0 Sprint3 E6: 技术状态展示辅助 ─────────────────────────────────────────
+// 技术状态7态: strong/conflict/very_weak/improving/weak/neutral/unavailable
+// 执行模式4种: immediate/staged/wait_pullback/base_only
+
+function getTechnicalStateLabel(s: string | undefined | null): string {
+  switch (s) {
+    case 'strong': return '强势';
+    case 'conflict': return '冲突';
+    case 'very_weak': return '极弱';
+    case 'improving': return '改善';
+    case 'weak': return '弱势';
+    case 'neutral': return '中性';
+    case 'unavailable': return '无数据';
+    default: return '—';
+  }
+}
+
+function getTechnicalStateBadgeClass(s: string | undefined | null): string {
+  switch (s) {
+    case 'strong':
+      return 'border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-400 bg-emerald-100/60 dark:bg-emerald-900/40';
+    case 'conflict':
+      return 'border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 bg-amber-100/60 dark:bg-amber-900/40';
+    case 'very_weak':
+      return 'border-red-300 dark:border-red-700 text-red-700 dark:text-red-400 bg-red-100/60 dark:bg-red-900/40';
+    case 'improving':
+      return 'border-sky-300 dark:border-sky-700 text-sky-700 dark:text-sky-400 bg-sky-100/60 dark:bg-sky-900/40';
+    case 'weak':
+      return 'border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-400 bg-orange-100/60 dark:bg-orange-900/40';
+    case 'neutral':
+    case 'unavailable':
+    default:
+      return 'border-border text-muted-foreground bg-muted/40 dark:bg-muted/20';
+  }
+}
+
+function getTechnicalModeShortLabel(m: string | undefined | null): string {
+  switch (m) {
+    case 'immediate': return '立即';
+    case 'staged': return '分批';
+    case 'wait_pullback': return '等回调';
+    case 'base_only': return '仅基础';
+    default: return '';
+  }
+}
+
 function formatYuan(v: number | null | undefined, decimals = 0): string {
   if (v === null || v === undefined) return '—';
   return `¥${v.toLocaleString('zh-CN', {
@@ -736,6 +782,10 @@ function buildRow(
     // V4.2 §4/§5: 桶类型 + 软风控
     adviceBucketType: adviceItem?.bucketType ?? 'none',
     adviceSoftWindControl: adviceItem?.softWindControl ?? 'none',
+    // V5.0 Sprint3 E6: 技术状态 + 执行模式
+    adviceTechnicalState: adviceItem?.technicalState ?? null,
+    adviceTechnicalMode: adviceItem?.technicalMode ?? null,
+    adviceTechnicalCoefficient: adviceItem?.technicalCoefficient ?? null,
   };
 }
 
@@ -1086,7 +1136,7 @@ export function UnifiedHoldingsTable({
 
           {/* The unified table - horizontally scrollable on small screens */}
           <div className="overflow-x-auto">
-            <Table className="min-w-[1280px]">
+            <Table className="min-w-[1360px]">
               <TableHeader>
                 <TableRow className="bg-muted/40 dark:bg-muted/20 hover:bg-muted/40 dark:hover:bg-muted/20 border-b border-border/60">
                   <TableHead className="w-[40px] text-center text-[11px] font-medium text-muted-foreground uppercase tracking-wide">展开</TableHead>
@@ -1099,6 +1149,7 @@ export function UnifiedHoldingsTable({
                   <TableHead className="text-center w-[65px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">配置状态</TableHead>
                   <TableHead className="text-center w-[70px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">资金桶</TableHead>
                   <TableHead className="text-center w-[70px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">软风控</TableHead>
+                  <TableHead className="text-center w-[78px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">技术状态</TableHead>
                   <TableHead className="text-right w-[100px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">本周建议</TableHead>
                   <TableHead className="w-[380px] max-w-[440px] text-[11px] font-medium text-muted-foreground uppercase tracking-wide">买入逻辑</TableHead>
                 </TableRow>
@@ -1280,6 +1331,31 @@ export function UnifiedHoldingsTable({
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </TableCell>
+                        {/* V5.0 Sprint3 E6 技术状态: 7态Badge + 执行模式小字 */}
+                        <TableCell className="text-center">
+                          {row.isInvestment && row.adviceTechnicalState ? (
+                            <div className="flex flex-col items-center gap-0.5">
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] px-1.5 py-0 rounded-full font-mono ${getTechnicalStateBadgeClass(row.adviceTechnicalState)}`}
+                                title={`V5.0 技术状态: ${getTechnicalStateLabel(row.adviceTechnicalState)}${
+                                  row.adviceTechnicalCoefficient
+                                    ? ` (${row.adviceTechnicalCoefficient.toFixed(1)}x)`
+                                    : ''
+                                }`}
+                              >
+                                {getTechnicalStateLabel(row.adviceTechnicalState)}
+                              </Badge>
+                              {row.adviceTechnicalMode && (
+                                <span className="text-[9px] text-muted-foreground font-mono">
+                                  {getTechnicalModeShortLabel(row.adviceTechnicalMode)}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         {/* 本周建议金额 */}
                         <TableCell className="text-right">
                           {row.isInvestment && row.adviceAmount !== null ? (
@@ -1384,7 +1460,7 @@ export function UnifiedHoldingsTable({
                             transition={{ duration: 0.3, ease: EASE }}
                             className="bg-muted/10 dark:bg-muted/5"
                           >
-                            <TableCell colSpan={12} className="p-0">
+                            <TableCell colSpan={13} className="p-0">
                               <CalculationDetailPanel
                                 row={row}
                                 advice={advice}

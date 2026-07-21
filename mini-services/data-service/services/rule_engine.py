@@ -44,6 +44,14 @@ from services.data_clean_engine import clean_numeric
 # 避免与 akshare_service / data_quality_score 的清洗逻辑漂移。
 safe_num = clean_numeric
 
+# V5.0 Sprint3 E6: MACD 技术执行分类器 — 增强仓分配时乘以技术系数
+# 技术系数只作用于增强仓, 不影响基础仓; 数据缺失回退中性(1.00)。
+try:
+    from services.technical_service import get_technical_for_etf as _get_technical_for_etf
+except Exception as _tech_import_err:  # 极端情况下也不阻断规则引擎
+    _get_technical_for_etf = None  # type: ignore
+    logger.warning(f"[TECH] import failed, technical coefficient disabled: {_tech_import_err}")
+
 # V4.2 策略书§4/§5/§8: 从 config 导入分桶比例和阈值
 from config import (
     BASE_BUCKET_RATIO,
@@ -1342,6 +1350,26 @@ def calculate_suggestions(
         }
 
     # ──────────────────────────────────────────────
+    # V5.0 Sprint3 E6: MACD 技术执行分类器
+    #   - 仅作用于增强仓(不影响基础仓)
+    #   - 数据缺失回退中性(coefficient=1.0, mode=immediate), 不阻断基础规则
+    #   - PRD §7.6 验收: 技术层不能使零缺口变正, 也不能独立卖出
+    # ──────────────────────────────────────────────
+    if _get_technical_for_etf is not None:
+        for code in list(per_item.keys()):
+            try:
+                tech = _get_technical_for_etf(code)
+            except Exception as _e:
+                logger.warning(f"[TECH] {code} classify failed: {_e}")
+                tech = {
+                    "state": "unavailable", "coefficient": 1.0,
+                    "execution_mode": "immediate",
+                }
+            per_item[code]["technical_state"] = tech.get("state", "neutral")
+            per_item[code]["technical_mode"] = tech.get("execution_mode", "immediate")
+            per_item[code]["technical_coefficient"] = tech.get("coefficient", 1.0)
+
+    # ──────────────────────────────────────────────
     # V4.2 策略书§8.4: QDII挂起资金释放(溢价恢复正常时分8周释放)
     # ──────────────────────────────────────────────
     hard_vetoed_codes = {c for c, it in per_item.items() if it["vetoed"]}
@@ -1419,6 +1447,14 @@ def calculate_suggestions(
     else:
         for c in value_pool:
             value_amounts[c] = 0.0
+
+    # V5.0 Sprint3 E6: 技术系数作用于增强仓(不影响基础仓)
+    #   - strong 1.5 / improving 1.2 / neutral 1.0 / conflict 0.8 / weak 0.5 / very_weak 0.0
+    #   - 技术系数>1时总增强仓仍不超过预算(有Step 10总量约束兜底)
+    #   - 技术层不能使零缺口变正(此处只放大增强仓, 不引入新缺口)
+    for c in value_pool:
+        tech_coef = per_item[c].get("technical_coefficient", 1.0)
+        value_amounts[c] = value_amounts[c] * tech_coef
 
     # ──────────────────────────────────────────────
     # V4.2 Step 8: 减量/加量只作用于增强仓; 基础仓不受影响
@@ -1764,6 +1800,10 @@ def calculate_suggestions(
             # vetoed 和 over_allocated 的 bucket_type 应为 "none" (它们不在 base_pool/value_pool 中, 默认 "none")
             bucketType=bucket_types.get(code, "none"),
             softWindControl=per_item.get(code, {}).get("soft_wind_control", "none") if code in investable_codes else "none",
+            # V5.0 Sprint3 E6: 技术执行分类(MACD + 20/40周均线 → 互斥分类 + 系数 + 执行模式)
+            technicalState=per_item.get(code, {}).get("technical_state", "neutral") if code in investable_codes else "neutral",
+            technicalMode=per_item.get(code, {}).get("technical_mode", "immediate") if code in investable_codes else "immediate",
+            technicalCoefficient=per_item.get(code, {}).get("technical_coefficient", 1.0) if code in investable_codes else 1.0,
         ))
 
     total_allocated = sum(s.amount for s in suggestions)

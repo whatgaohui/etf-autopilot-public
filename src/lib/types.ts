@@ -287,6 +287,10 @@ export interface AdviceSuggestion {
   // V4.2 策略书§4/§5: 桶类型 + 软风控级别
   bucketType?: string; // base_bucket | value_bucket | base+value | none
   softWindControl?: string; // none | reduce | forbid_enhancement | minimal_base | pause_all
+  // V5.0 Sprint3 E6: 技术分类字段
+  technicalState?: string;  // strong | conflict | very_weak | improving | weak | neutral | unavailable
+  technicalMode?: string;   // immediate | staged | wait_pullback | base_only
+  technicalCoefficient?: number; // 0.0 / 0.5 / 0.8 / 1.0 / 1.2 / 1.5
 }
 
 export interface AdviceResponse {

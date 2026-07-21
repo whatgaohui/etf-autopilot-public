@@ -75,10 +75,12 @@ import {
   getMacroTemperature,
   getMacroPrompts,
   refreshMacro,
+  getTechnicalClass,
   type FieldSourceConfig,
   type QualityScoreItem,
   type MacroMetricItem,
   type MacroPrompt,
+  type TechnicalClassification,
 } from '@/lib/api';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 
@@ -2496,6 +2498,292 @@ function RuleImpactPanel({
   );
 }
 
+// ─── V5.0 Sprint3 E6: 技术分析面板 ───
+// MACD(12/26/9) + 20/40周均线 → 互斥7态分类 → 执行模式系数
+// 技术状态7态: strong/conflict/very_weak/improving/weak/neutral/unavailable
+// 执行模式4种: immediate(立即) / staged(分批) / wait_pullback(等待回调) / base_only(仅基础仓)
+
+const TECHNICAL_STATE_META: Record<
+  string,
+  { label: string; color: string; bg: string; dot: string }
+> = {
+  strong: {
+    label: '强势',
+    color: 'text-emerald-700 dark:text-emerald-400',
+    bg: 'bg-emerald-100/70 dark:bg-emerald-900/40 border-emerald-300 dark:border-emerald-700',
+    dot: 'bg-emerald-500',
+  },
+  conflict: {
+    label: '冲突',
+    color: 'text-amber-700 dark:text-amber-400',
+    bg: 'bg-amber-100/70 dark:bg-amber-900/40 border-amber-300 dark:border-amber-700',
+    dot: 'bg-amber-500',
+  },
+  very_weak: {
+    label: '极弱',
+    color: 'text-red-700 dark:text-red-400',
+    bg: 'bg-red-100/70 dark:bg-red-900/40 border-red-300 dark:border-red-700',
+    dot: 'bg-red-500',
+  },
+  improving: {
+    label: '改善中',
+    color: 'text-sky-700 dark:text-sky-400',
+    bg: 'bg-sky-100/70 dark:bg-sky-900/40 border-sky-300 dark:border-sky-700',
+    dot: 'bg-sky-500',
+  },
+  weak: {
+    label: '弱势',
+    color: 'text-orange-700 dark:text-orange-400',
+    bg: 'bg-orange-100/70 dark:bg-orange-900/40 border-orange-300 dark:border-orange-700',
+    dot: 'bg-orange-500',
+  },
+  neutral: {
+    label: '中性',
+    color: 'text-muted-foreground',
+    bg: 'bg-muted/60 border-border',
+    dot: 'bg-muted-foreground',
+  },
+  unavailable: {
+    label: '数据不足',
+    color: 'text-muted-foreground',
+    bg: 'bg-muted/60 border-border',
+    dot: 'bg-muted-foreground/60',
+  },
+};
+
+const EXECUTION_MODE_META: Record<
+  string,
+  { label: string; hint: string; color: string }
+> = {
+  immediate: { label: '立即执行', hint: '技术面强势或中性, 一次到位', color: 'text-emerald-700 dark:text-emerald-400' },
+  staged: { label: '分批执行', hint: '冲突或改善中, 分批降低择时风险', color: 'text-amber-700 dark:text-amber-400' },
+  wait_pullback: { label: '等待回调', hint: '极弱, 暂缓增强仓等待反转', color: 'text-red-700 dark:text-red-400' },
+  base_only: { label: '仅基础仓', hint: '弱势, 关闭增强仓只保留基础定投', color: 'text-orange-700 dark:text-orange-400' },
+};
+
+const WEEKLY_STATE_META: Record<string, string> = {
+  above_ma20_above_ma40: '周线确认 (价在MA20/MA40上方)',
+  above_ma20_below_ma40: '周线待确认 (在MA20上方但跌破MA40)',
+  below_ma20_above_ma40: '周线走弱 (跌破MA20但守MA40)',
+  below_ma20_below_ma40: '周线弱势 (跌破MA20/MA40)',
+  insufficient_data: '周线数据不足',
+};
+
+const DAILY_STATE_META: Record<string, string> = {
+  macd_golden_cross: 'MACD金叉 (日线反转向上)',
+  macd_death_cross: 'MACD死叉 (日线反转向下)',
+  macd_above_zero: 'MACD在零轴上方 (多头)',
+  macd_below_zero: 'MACD在零轴下方 (空头)',
+  insufficient: '日线数据不足',
+};
+
+function TechnicalAnalysisPanel({
+  etf,
+}: {
+  etf: { code: string; name: string; category: string };
+}) {
+  const { data, isLoading, isError } = useQuery<TechnicalClassification>({
+    queryKey: ['technical', 'classify', etf.code],
+    queryFn: () => getTechnicalClass(etf.code),
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+
+  const stateMeta = data
+    ? TECHNICAL_STATE_META[data.state] ?? TECHNICAL_STATE_META.unavailable
+    : TECHNICAL_STATE_META.unavailable;
+  const modeMeta = data
+    ? EXECUTION_MODE_META[data.execution_mode] ?? EXECUTION_MODE_META.immediate
+    : EXECUTION_MODE_META.immediate;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Activity className="size-4 text-primary" />
+          技术分析 · {etf.name}
+        </CardTitle>
+        <CardDescription className="text-xs">
+          MACD(12/26/9) + 20/40周均线 → 互斥7态分类 → 执行模式系数
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-24 rounded-lg" />
+            ))}
+          </div>
+        ) : isError || !data ? (
+          <div className="h-24 flex flex-col items-center justify-center text-muted-foreground text-sm gap-2">
+            <AlertCircle className="size-5 text-muted-foreground/60" />
+            <span>技术数据加载失败，已回退中性(1.0x)</span>
+          </div>
+        ) : (
+          <>
+            {/* 状态大Badge + 系数 + 执行模式 */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* 技术状态 */}
+              <div className={`rounded-lg border p-3 flex flex-col gap-1 ${stateMeta.bg}`}>
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">技术状态</div>
+                <div className="flex items-center gap-2">
+                  <span className={`inline-block size-2.5 rounded-full ${stateMeta.dot}`} />
+                  <span className={`text-lg font-bold ${stateMeta.color}`}>
+                    {stateMeta.label}
+                  </span>
+                </div>
+                <div className="text-[10px] text-muted-foreground font-mono">
+                  state = {data.state}
+                </div>
+              </div>
+
+              {/* 执行模式 */}
+              <div className="rounded-lg border p-3 flex flex-col gap-1 bg-muted/30">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">执行模式</div>
+                <div className={`text-lg font-bold ${modeMeta.color}`}>
+                  {modeMeta.label}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {modeMeta.hint}
+                </div>
+              </div>
+
+              {/* 技术系数 */}
+              <div className="rounded-lg border p-3 flex flex-col gap-1 bg-muted/30">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">技术系数</div>
+                <div className="text-lg font-bold font-mono tabular-nums text-foreground">
+                  {data.coefficient.toFixed(1)}x
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {data.coefficient > 1
+                    ? '增强仓加码'
+                    : data.coefficient === 1
+                    ? '正常执行'
+                    : data.coefficient === 0
+                    ? '增强仓清零'
+                    : '增强仓减码'}
+                </div>
+              </div>
+            </div>
+
+            {/* 周线 / 日线 / MA 数值 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="rounded-md border bg-muted/20 p-3 space-y-1">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">周线状态</div>
+                <div className="text-xs font-medium">
+                  {WEEKLY_STATE_META[data.weekly_state] ?? data.weekly_state}
+                </div>
+                <div className="text-[11px] text-muted-foreground font-mono">
+                  MA20: <span className="text-foreground">{data.ma20 !== null ? data.ma20.toFixed(3) : '—'}</span>
+                  <span className="mx-2">·</span>
+                  MA40: <span className="text-foreground">{data.ma40 !== null ? data.ma40.toFixed(3) : '—'}</span>
+                </div>
+              </div>
+              <div className="rounded-md border bg-muted/20 p-3 space-y-1">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">日线状态</div>
+                <div className="text-xs font-medium">
+                  {DAILY_STATE_META[data.daily_state] ?? data.daily_state}
+                </div>
+                {data.reason && (
+                  <div className="text-[10px] text-amber-600 dark:text-amber-400">
+                    {data.reason}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* MACD 直方图最近5天趋势 */}
+            <div className="rounded-md border bg-muted/20 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  MACD直方图 最近5天
+                </div>
+                {data.macd_histogram_tail.length > 0 && (
+                  <div className="text-[10px] text-muted-foreground">
+                    趋势: {data.macd_histogram_tail[data.macd_histogram_tail.length - 1] >
+                    data.macd_histogram_tail[0]
+                      ? '↑ 走强'
+                      : data.macd_histogram_tail[data.macd_histogram_tail.length - 1] <
+                        data.macd_histogram_tail[0]
+                      ? '↓ 走弱'
+                      : '→ 平稳'}
+                  </div>
+                )}
+              </div>
+              {data.macd_histogram_tail.length === 0 ? (
+                <div className="text-xs text-muted-foreground">数据不足</div>
+              ) : (
+                <div className="flex items-stretch gap-1.5 h-20">
+                  {/* 左侧: 0轴标签 */}
+                  <div className="flex flex-col justify-between text-[9px] text-muted-foreground/60 font-mono pr-1">
+                    <span>+</span>
+                    <span className="border-t border-muted-foreground/30">0</span>
+                    <span>−</span>
+                  </div>
+                  {/* 直方图柱子 */}
+                  {data.macd_histogram_tail.map((v, i) => {
+                    const maxAbs = Math.max(
+                      ...data.macd_histogram_tail.map((x) => Math.abs(x)),
+                      0.0001
+                    );
+                    const heightPct = Math.min(50, (Math.abs(v) / maxAbs) * 50);
+                    const isPositive = v >= 0;
+                    return (
+                      <div key={i} className="flex-1 flex flex-col items-center gap-0.5 min-w-0">
+                        {/* 上半部分: 正值柱 (高度=heightPct%, 占容器上半) */}
+                        <div className="h-1/2 w-full flex flex-col justify-end items-center">
+                          {isPositive && (
+                            <div
+                              className="w-full rounded-t-sm bg-emerald-500/70 dark:bg-emerald-400/70"
+                              style={{ height: `${heightPct * 2}%` }}
+                              title={`D-${data.macd_histogram_tail.length - 1 - i}: ${v.toFixed(4)}`}
+                            />
+                          )}
+                        </div>
+                        {/* 中线 */}
+                        <div className="w-full border-t border-muted-foreground/30" />
+                        {/* 下半部分: 负值柱 */}
+                        <div className="h-1/2 w-full flex flex-col justify-start items-center">
+                          {!isPositive && (
+                            <div
+                              className="w-full rounded-b-sm bg-red-500/70 dark:bg-red-400/70"
+                              style={{ height: `${heightPct * 2}%` }}
+                              title={`D-${data.macd_histogram_tail.length - 1 - i}: ${v.toFixed(4)}`}
+                            />
+                          )}
+                        </div>
+                        <div className="text-[9px] text-muted-foreground font-mono tabular-nums">
+                          {v.toFixed(3)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {/* MACD线 / 信号线 最新值 */}
+              {data.macd_line_tail.length > 0 && data.signal_line_tail.length > 0 && (
+                <div className="text-[10px] text-muted-foreground font-mono">
+                  MACD线: <span className="text-foreground">{data.macd_line_tail[data.macd_line_tail.length - 1].toFixed(3)}</span>
+                  <span className="mx-2">·</span>
+                  信号线: <span className="text-foreground">{data.signal_line_tail[data.signal_line_tail.length - 1].toFixed(3)}</span>
+                </div>
+              )}
+            </div>
+
+            {/* 说明文字 */}
+            <Alert className="border-border/60 bg-muted/30">
+              <Info className="size-3.5 text-muted-foreground" />
+              <AlertDescription className="text-[11px] text-muted-foreground leading-relaxed">
+                技术指标只调整增强仓节奏,不创造预算或独立卖出。数据缺失时回退中性(1.0x)。
+              </AlertDescription>
+            </Alert>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── QDII Premium Emphasis Panel (§10.B2) ───
 // Prominent panel for 513500 / 513300 showing current premium, 7-day avg,
 // 30-day trend chart with 2%/3% reference lines, rule status, and one-line impact.
@@ -3171,6 +3459,13 @@ export default function TrendsTab() {
             summary={selectedSummary}
             rules={rules}
           />
+        </section>
+      )}
+
+      {/* 2c. V5.0 Sprint3 E6: 技术分析面板 (MACD + 周线MA → 7态分类 → 执行模式) */}
+      {selectedEtf && (
+        <section>
+          <TechnicalAnalysisPanel etf={selectedEtf} />
         </section>
       )}
 
