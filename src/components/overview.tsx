@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, Clock, AlertTriangle, AlertCircle, Upload, FileEdit } from 'lucide-react';
+import { RefreshCw, Clock, AlertTriangle, AlertCircle, Upload, FileEdit, ClipboardCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { HoldingsUpload } from '@/components/holdings-upload';
@@ -17,6 +17,8 @@ import { CashSubaccountFlowCard } from '@/components/cash-subaccount-flow-card';
 import { CashLedgerConservationCard } from '@/components/cash-ledger-conservation-card';
 import { PortfolioPerformanceCard } from '@/components/portfolio-performance-card';
 import { ExecutionConfirmDialog } from '@/components/execution-confirm-dialog';
+import { FillOrderDialog } from '@/components/fill-order-dialog';
+import { ReconciliationCard } from '@/components/reconciliation-card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
@@ -33,6 +35,7 @@ import {
   getQualitySummary,
   getMacroPrompts,
   createExecutionOrders,
+  getExecutionOrdersStatus,
 } from '@/lib/api';
 import type { OcrResult, AdviceResponse, CachedSummaryResponse } from '@/lib/types';
 
@@ -50,6 +53,9 @@ export function Overview() {
   const [isGeneratingAdvice, setIsGeneratingAdvice] = useState(false);
   const [generationStep, setGenerationStep] = useState(0);
   const [executionDialogOpen, setExecutionDialogOpen] = useState(false);
+  const [fillDialogOpen, setFillDialogOpen] = useState(false);
+  // 用于在 FillOrderDialog 回填成功后刷新 ReconciliationCard
+  const [reconRefreshKey, setReconRefreshKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Queries
@@ -88,6 +94,20 @@ export function Overview() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // V5.0 Sprint4 E8: 拉取本批次订单状态摘要, 用于决定是否展示"成交回填"按钮
+  // 仅当 confirmed/partially_executed 订单 > 0 时显示按钮
+  const adviceCalculationId = advice?.calculationId || '';
+  const ordersStatusQuery = useQuery({
+    queryKey: ['execution-orders-status', adviceCalculationId],
+    queryFn: () => getExecutionOrdersStatus(adviceCalculationId),
+    enabled: !!adviceCalculationId,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  });
+  const hasFillableOrders =
+    (ordersStatusQuery.data?.confirmed ?? 0) > 0 ||
+    (ordersStatusQuery.data?.partiallyExecuted ?? 0) > 0;
+
   const hasHoldings = !!holdingsQuery.data?.holdings?.length;
   const holdings = holdingsQuery.data?.holdings || [];
   const totalAssets = holdingsQuery.data?.totalAssets || 0;
@@ -95,6 +115,8 @@ export function Overview() {
   const snapshotDate = holdingsQuery.data?.snapshotDate || null;
   const abnormalChanges = holdingsQuery.data?.abnormalChanges || [];
   const etfConfigs = etfConfigsQuery.data || [];
+  // V5.0 Sprint4 E8: ETF 代码→名称映射, 用于 FillOrderDialog / ReconciliationCard
+  const etfInfos = (etfConfigs || []).map((e) => ({ code: e.code, name: e.name }));
 
   // Market data freshness
   const marketData = marketDataQuery.data as CachedSummaryResponse | null;
@@ -415,6 +437,33 @@ export function Overview() {
         </FadeInUp>
       )}
 
+      {/* V5.0 Sprint4 E8: 执行单操作工具栏 + 计划vs实际对账卡
+          — 仅当 advice 存在时渲染; 当存在 confirmed/partially_executed 订单时额外展示"成交回填"按钮 */}
+      {hasHoldings && advice && (
+        <FadeInUp delay={0.12}>
+          <div className="space-y-3">
+            {hasFillableOrders && (
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => setFillDialogOpen(true)}
+                >
+                  <ClipboardCheck className="size-3.5" />
+                  成交回填
+                </Button>
+              </div>
+            )}
+            <ReconciliationCard
+              calculationId={advice.calculationId}
+              etfInfos={etfInfos}
+              refreshKey={reconRefreshKey}
+            />
+          </div>
+        </FadeInUp>
+      )}
+
       {/* Section 2: Red Line Audit Card (auto-hides when no vetoed investment-target items) */}
       {hasHoldings && advice && (
         <FadeInUp delay={0.15}>
@@ -459,6 +508,25 @@ export function Overview() {
         onConfirmed={() => {
           // 确认后刷新收益追踪 + 持仓（实际执行可能影响持仓）
           queryClient.invalidateQueries({ queryKey: ['portfolio-performance'] });
+          // V5.0 Sprint4 E8: 确认后刷新订单状态摘要(控制"成交回填"按钮可见性)
+          queryClient.invalidateQueries({ queryKey: ['execution-orders-status'] });
+        }}
+      />
+
+      {/* V5.0 Sprint4 E8: 成交回填弹窗 — 对 confirmed/partially_executed 订单回填实际成交 */}
+      <FillOrderDialog
+        open={fillDialogOpen}
+        onOpenChange={setFillDialogOpen}
+        calculationId={advice?.calculationId || ''}
+        etfInfos={etfInfos}
+        onFilled={() => {
+          // 回填/撤销后刷新: 订单状态摘要 + 对账卡 + 收益追踪 + 守恒校验
+          queryClient.invalidateQueries({ queryKey: ['execution-orders-status'] });
+          queryClient.invalidateQueries({ queryKey: ['execution-reconciliation'] });
+          queryClient.invalidateQueries({ queryKey: ['portfolio-performance'] });
+          queryClient.invalidateQueries({ queryKey: ['cash-conservation'] });
+          queryClient.invalidateQueries({ queryKey: ['cash-accounts'] });
+          setReconRefreshKey((k) => k + 1);
         }}
       />
     </div>

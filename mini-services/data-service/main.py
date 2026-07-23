@@ -412,6 +412,63 @@ def _init_db():
             """
         )
 
+        # V5.0 Sprint4 E8: execution_order 表加字段 — 成交回填(后半)
+        #   planned_shares     — 计划份额(已有, 但老库可能缺失, 幂等补列)
+        #   actual_amount      — 实际成交金额(累加, 支持部分成交)
+        #   actual_shares      — 实际成交份额(累加)
+        #   actual_price       — 实际成交均价
+        #   fee                — 累计手续费(进入资金守恒)
+        #   filled_at          — 最近一次成交时间
+        #   cancelled_at       — 撤单时间
+        #   expired_at         — 过期时间
+        try:
+            existing_cols_eo = {row[1] for row in conn.execute("PRAGMA table_info(execution_order)").fetchall()}
+            new_cols_eo = [
+                ("planned_shares", "REAL"),
+                ("actual_amount", "REAL DEFAULT 0"),
+                ("actual_shares", "REAL DEFAULT 0"),
+                ("actual_price", "REAL"),
+                ("fee", "REAL DEFAULT 0"),
+                ("filled_at", "TEXT"),
+                ("cancelled_at", "TEXT"),
+                ("expired_at", "TEXT"),
+            ]
+            for col, coltype in new_cols_eo:
+                if col not in existing_cols_eo:
+                    conn.execute(f"ALTER TABLE execution_order ADD COLUMN {col} {coltype}")
+        except Exception as e:
+            logger.warning(f"[STARTUP] execution_order schema upgrade failed (non-blocking): {e}")
+
+        # V5.0 Sprint4 E8: execution_fill 表 — 成交回填记录
+        #   idempotency_key UNIQUE — 幂等保护: 相同 key 只生效一次(PRD §7.8 验收)
+        #   order_id → execution_order.id (FK), 一个订单可多次部分成交
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS execution_fill (
+                    id TEXT PRIMARY KEY,
+                    order_id TEXT NOT NULL,
+                    etf_code TEXT NOT NULL,
+                    fill_price REAL NOT NULL,
+                    fill_shares REAL NOT NULL,
+                    fill_amount REAL NOT NULL,
+                    fee REAL DEFAULT 0,
+                    fill_time TEXT NOT NULL,
+                    idempotency_key TEXT UNIQUE,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (order_id) REFERENCES execution_order(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_execution_fill_order
+                    ON execution_fill(order_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_execution_fill_etf
+                    ON execution_fill(etf_code, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_execution_fill_idem
+                    ON execution_fill(idempotency_key);
+                """
+            )
+        except Exception as e:
+            logger.warning(f"[STARTUP] execution_fill table creation failed (non-blocking): {e}")
+
         # V4.2 PRD§11.14: 宏观3张表
         try:
             from services.macro_service import _ensure_macro_tables

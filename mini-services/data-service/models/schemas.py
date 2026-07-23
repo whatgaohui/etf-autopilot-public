@@ -197,6 +197,15 @@ class RebalanceSuggestion(BaseModel):
     # V4.2 策略书§5: 软风控级别 none | reduce | forbid_enhancement | minimal_base | pause_all
     soft_wind_control: str = Field("none", alias="softWindControl", description="软风控级别")
 
+    # V5.0 Sprint4 E7: 周线强势时标记观察一周, 不立即执行再平衡卖出
+    # PRD §7.7: "周线强势最多允许观察一周"
+    # 触发条件: 技术状态(weekly) 为 strong 时, 即便估值极端+超配也不立即卖出,
+    # 标记 technical_observation=True, 等待一周后再次评估; 第二次仍命中则强制执行。
+    technical_observation: bool = Field(False, alias="technicalObservation",
+        description="True=周线强势, 观察一周不立即执行; False=正常执行")
+    observation_reason: str = Field("", alias="observationReason",
+        description="观察一周的原因说明(如: 周线技术强势, 观察一周)")
+
     model_config = {"populate_by_name": True}
 
 

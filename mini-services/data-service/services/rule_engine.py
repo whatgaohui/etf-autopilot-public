@@ -909,6 +909,9 @@ def _check_a_share_rebalance(
     if excess_value <= 0:
         return None  # 未超配，不卖（即使极高估也只暂停新增）
 
+    # V5.0 Sprint4 E7: 多档命中只执行最高档 — 通过 if-elif 级联实现
+    # PRD §7.7 "多档同时命中只执行最高档": Level2(50%) 优先于 Level1(30%),
+    # 不叠加比例。先检查更高档(95%/8pp), 不满足再降级到 Level1(90%/5pp)。
     # Level2: 分位>95% 且 超配≥8pp → 卖50%
     if valuation > 95 and over_pp >= 8:
         sell_ratio, level, threshold_desc = 0.5, "level2", f"PE/PB分位{valuation:.1f}%>95% 且 超配{over_pp:.1f}pp≥8pp"
@@ -981,6 +984,9 @@ def _check_dividend_rebalance(
     if excess_value <= 0:
         return None
 
+    # V5.0 Sprint4 E7: 多档命中只执行最高档 — 通过 if-elif 级联实现
+    # PRD §7.7 "多档同时命中只执行最高档": Level2(50%) 优先于 Level1(30%),
+    # 不叠加比例。先检查更高档(<10%/8pp), 不满足再降级到 Level1(<15%/5pp)。
     # V5.0 E4 反向分位: dy_pct < 10 表示股息率分位极低=价格偏贵=应卖
     # Level2: 股息率分位<10% 且 超配≥8pp → 卖50%
     if dy_pct < 10 and over_pp >= 8:
@@ -1043,6 +1049,9 @@ def _check_us_share_rebalance(
     if excess_value <= 0:
         return None
 
+    # V5.0 Sprint4 E7: 多档命中只执行最高档 — 通过 if-elif 级联实现
+    # PRD §7.7 "多档同时命中只执行最高档": QDII溢价路径(Level2, 0.4) 优先于 PE分位路径(Level1, 0.2),
+    # 不叠加比例。QDII溢价窗口更好(更高档), 先检查; 不满足再降级到 PE分位路径。
     # 优先检查 QDII 溢价路径（情绪溢价再平衡，卖出窗口更好）
     if premium_today is not None and premium_today > 5 and over_pp >= 5:
         sell_ratio, level, threshold_desc = 0.4, "level2", f"QDII溢价{premium_today:.2f}%>5% 且 超配{over_pp:.1f}pp≥5pp"
@@ -1158,6 +1167,28 @@ def run_rebalance_engine(
             )
 
         if suggestion is not None:
+            # V5.0 Sprint4 E7: 周线强势最多允许观察一周 (PRD §7.7)
+            # 触发条件: 技术状态(weekly) 为 "strong" 时, 即便估值极端+超配也不立即卖出,
+            # 标记 technical_observation=True, 等待一周后再次评估。
+            # 注意: 技术指标不能提高卖出额(§7.7 验收), 所以这里仅修改 observation 字段,
+            # 不修改 sell_amount/sell_ratio。observation=True 时调用方应不立即下单卖出。
+            try:
+                from services.technical_service import get_technical_for_etf
+                tech = get_technical_for_etf(code)
+                if tech.get("state") == "strong":
+                    suggestion.technical_observation = True
+                    suggestion.observation_reason = (
+                        f"周线技术强势(MACD金叉+20/40周均线之上), 观察一周再评估; "
+                        f"若下周仍满足再平衡双条件则强制执行。"
+                    )
+                    logger.info(
+                        f"[REBALANCE-E7] {code} {h.name} 周线技术强势, 标记观察一周 "
+                        f"(trigger_level={suggestion.trigger_level}, sell_amount=¥{suggestion.sell_amount})"
+                    )
+            except Exception as _e:
+                # 技术检查失败不阻断再平衡建议生成(降级为正常执行)
+                logger.warning(f"[REBALANCE-E7] {code} technical check failed (non-blocking): {_e}")
+
             rebalance_list.append(suggestion)
             logger.info(f"[REBALANCE] {code} {h.name} triggered {suggestion.trigger_level}: sell ¥{suggestion.sell_amount}")
 
@@ -1823,6 +1854,66 @@ def calculate_suggestions(
         invested_total=invested_asset_value,
     )
     total_rebalanced = sum(r.sell_amount for r in rebalance_suggestions)
+
+    # ──────────────────────────────────────────────
+    # V5.0 Sprint4 E7: 再平衡释放计划创建 — 卖出款下周起按策略周预算和缺口释放
+    # PRD §7.7: "卖出当周不重新投入, 自下一周按策略周预算和缺口释放"
+    #   - 卖出款进入 rebalance_equity_reserve(在 CashPoolEngine 步骤已实现)
+    #   - 这里为每只触发再平衡且非"观察一周"的 ETF 创建 release_plan
+    #   - 幂等: 同一 ETF 不重复创建 active 释放计划
+    #   - 技术观察中(technical_observation=True)的不创建(本周不卖, 不需要释放计划)
+    # ──────────────────────────────────────────────
+    e7_created_plans = 0
+    e7_skipped_plans = 0
+    try:
+        import sqlite3 as _sqlite3_e7
+        from config import DB_PATH as _DB_PATH_E7
+        from services.release_plan_service import create_release_plan as _create_release_plan
+        _conn_e7 = _sqlite3_e7.connect(_DB_PATH_E7)
+        try:
+            for rebalance in rebalance_suggestions:
+                if rebalance.sell_amount <= 0:
+                    continue
+                if rebalance.technical_observation:
+                    # 观察一周, 本周不卖出, 不创建释放计划
+                    e7_skipped_plans += 1
+                    logger.info(
+                        f"[REBALANCE-E7] {rebalance.code} technical_observation=True, "
+                        f"skip release_plan creation (observe one week)"
+                    )
+                    continue
+                # 幂等: 同一 ETF 若已有 idle/releasing/paused 的 rebalance_reserve 计划, 不重复创建
+                existing = _conn_e7.execute(
+                    "SELECT id FROM release_plan WHERE target_etf=? AND plan_type='rebalance_reserve' "
+                    "AND state IN ('idle', 'releasing', 'paused')",
+                    (rebalance.code,),
+                ).fetchone()
+                if existing:
+                    e7_skipped_plans += 1
+                    logger.info(
+                        f"[REBALANCE-E7] {rebalance.code} already has active release_plan "
+                        f"{existing[0]}, skip"
+                    )
+                    continue
+                _create_release_plan(
+                    conn=_conn_e7,
+                    plan_type="rebalance_reserve",
+                    account_id="rebalance_equity_reserve",
+                    balance=float(rebalance.sell_amount),
+                    target_etf=rebalance.code,
+                    weeks=8,  # 默认 8 周释放完
+                )
+                e7_created_plans += 1
+            _conn_e7.commit()
+            if e7_created_plans > 0:
+                logger.info(
+                    f"[REBALANCE-E7] release_plan created: {e7_created_plans}, "
+                    f"skipped: {e7_skipped_plans}"
+                )
+        finally:
+            _conn_e7.close()
+    except Exception as _e:
+        logger.warning(f"[REBALANCE-E7] release_plan creation failed (non-blocking): {_e}")
 
     # ──────────────────────────────────────────────
     # V4.2 Step 14: Cash Pool Engine — 现金子账户路由(策略书§3.1)

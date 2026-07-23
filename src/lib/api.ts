@@ -1058,3 +1058,150 @@ export async function getExecutionOrdersStatus(
 ): Promise<ExecutionOrdersStatus> {
   return request(`/execution?type=orders-status&calculationId=${encodeURIComponent(calculationId)}`);
 }
+
+// ─── V5.0 Sprint4 E8: 成交回填 + 计划vs实际对账 ───
+//
+// POST /api/execution?action=orders-fill       → 成交回填 (累加 actual_*, 状态机: confirmed → partially_executed → executed)
+// POST /api/execution?action=orders-cancel     → 撤销订单 (status → cancelled, 资金不主动转移)
+// GET  /api/execution?type=fills&calculationId → 成交记录列表 (按 calculationId 或 orderId 过滤)
+// GET  /api/execution?type=reconciliation&calculationId → 计划vs实际对账 (含偏差 + 状态分类)
+//
+// 幂等保护: idempotency_key UNIQUE + 显式 SELECT 双重检查
+// 资金守恒: fill_amount + fee 都通过 withdraw 流出系统, 参与 check_conservation
+
+export interface FillRequest {
+  orderId: string;
+  etfCode: string;
+  fillPrice: number;
+  fillShares: number;
+  fillAmount: number;
+  fee: number;
+  idempotencyKey: string;
+}
+
+// fillOrder 返回字段(后端 camelCase 与 snake_case 都可能出现, 兼容两种)
+export interface FillOrderResponse {
+  success: boolean;
+  error?: string;
+  fill_id?: string;
+  fillId?: string;
+  order_id?: string;
+  orderId?: string;
+  etf_code?: string;
+  etfCode?: string;
+  idempotency_key?: string;
+  idempotencyKey?: string;
+  order_status?: string;
+  orderStatus?: string;
+  actual_amount?: number;
+  actualAmount?: number;
+  actual_shares?: number;
+  actualShares?: number;
+  actual_price?: number;
+  actualPrice?: number;
+  fee_total?: number;
+  feeTotal?: number;
+  planned_amount?: number;
+  plannedAmount?: number;
+  fill_time?: string;
+  fillTime?: string;
+  existingFillId?: string;
+  conservation?: unknown;
+}
+
+// 单条成交记录 (execution_fill 表)
+export interface FillRecord {
+  fillId: string;
+  orderId: string;
+  etfCode: string;
+  fillPrice: number;
+  fillShares: number;
+  fillAmount: number;
+  fee: number;
+  fillTime: string;
+  idempotencyKey: string;
+  createdAt: string;
+  calculationId: string;
+}
+
+// 对账条目 (与 execution_order 一对一)
+// reconciliationStatus: not_started | completed | partial | under_filled | over_filled
+// orderStatus: pending | confirmed | rejected | executed | partially_executed | cancelled | expired
+export interface ReconciliationItem {
+  etfCode: string;
+  orderId: string;
+  calculationId: string;
+  side: string;
+  orderStatus: string;
+  executionMode: string;
+  plannedAmount: number;
+  plannedShares: number | null;
+  actualAmount: number;
+  actualShares: number;
+  actualPrice: number | null;
+  fee: number;
+  deviation: number;
+  deviationPct: number;
+  reconciliationStatus: string;
+  filledAt: string | null;
+  cancelledAt: string | null;
+  expiredAt: string | null;
+  createdAt: string;
+}
+
+export interface ReconciliationSummary {
+  totalPlanned: number;
+  totalActual: number;
+  totalDeviation: number;
+  totalDeviationPct: number;
+}
+
+export interface ReconciliationResponse {
+  calculationId: string;
+  items: ReconciliationItem[];
+  total: number;
+  summary: ReconciliationSummary;
+  error?: string;
+}
+
+export async function fillOrder(
+  req: FillRequest
+): Promise<FillOrderResponse> {
+  return request('/execution?action=orders-fill', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function cancelOrder(
+  orderId: string,
+  reason: string
+): Promise<{
+  success: boolean;
+  error?: string;
+  previous_status?: string;
+  previousStatus?: string;
+  new_status?: string;
+  newStatus?: string;
+}> {
+  return request('/execution?action=orders-cancel', {
+    method: 'POST',
+    body: JSON.stringify({ orderId, reason }),
+  });
+}
+
+export async function getReconciliation(
+  calculationId: string
+): Promise<ReconciliationResponse> {
+  return request(
+    `/execution?type=reconciliation&calculationId=${encodeURIComponent(calculationId)}`
+  );
+}
+
+export async function getFills(
+  calculationId: string
+): Promise<{ items: FillRecord[]; total: number; error?: string }> {
+  return request(
+    `/execution?type=fills&calculationId=${encodeURIComponent(calculationId)}`
+  );
+}
